@@ -89,21 +89,21 @@ end
 #pub fn file_open
   {lb:agz}{n:pos | n < 1048576}
   (path: !$A.borrow(byte, lb, n), path_len: int n,
-   flags: int, mode: int): $R.result(fd)
+   flags: int, mode: int): $R.result(fd, int)
 
 #pub fn file_read
   {l:agz}{n:pos}
-  (f: !fd, buf: !$A.arr(byte, l, n), len: int n): $R.result(int)
+  (f: !fd, buf: !$A.arr(byte, l, n), len: int n): $R.result(int, int)
 
 #pub fn file_write
   {lb:agz}{n:pos}
-  (f: !fd, buf: !$A.borrow(byte, lb, n), len: int n): $R.result(int)
+  (f: !fd, buf: !$A.borrow(byte, lb, n), len: int n): $R.result(int, int)
 
-#pub fn file_close(f: fd): $R.result(int)
+#pub fn file_close(f: fd): $R.result(int, int)
 
 #pub fn file_size
   {lb:agz}{n:pos | n < 1048576}
-  (path: !$A.borrow(byte, lb, n), path_len: int n): $R.result(int)
+  (path: !$A.borrow(byte, lb, n), path_len: int n): $R.result(int, int)
 
 (* ============================================================
    Directory operations
@@ -111,13 +111,13 @@ end
 
 #pub fn dir_open
   {lb:agz}{n:pos | n < 1048576}
-  (path: !$A.borrow(byte, lb, n), path_len: int n): $R.result(dir)
+  (path: !$A.borrow(byte, lb, n), path_len: int n): $R.result(dir, int)
 
 #pub fn dir_next
   {l:agz}{n:pos}
   (d: !dir, name_buf: !$A.arr(byte, l, n), max_len: int n): $R.option(int)
 
-#pub fn dir_close(d: dir): $R.result(int)
+#pub fn dir_close(d: dir): $R.result(int, int)
 
 (* ============================================================
    Buffered reader
@@ -139,7 +139,7 @@ end
   {l:agz}{n:pos}
   (r: !buf_reader, buf: !$A.arr(byte, l, n), max_len: int n): $R.option(int)
 
-#pub fn buf_reader_close(r: buf_reader): $R.result(int)
+#pub fn buf_reader_close(r: buf_reader): $R.result(int, int)
 
 (* ============================================================
    Buffered writer
@@ -153,13 +153,13 @@ end
 
 #pub fun buf_write
   {lb:agz}{n:pos}
-  (w: !buf_writer, data: !$A.borrow(byte, lb, n), len: int n): $R.result(int)
+  (w: !buf_writer, data: !$A.borrow(byte, lb, n), len: int n): $R.result(int, int)
 
-#pub fn buf_write_byte(w: !buf_writer, b: int): $R.result(int)
+#pub fn buf_write_byte(w: !buf_writer, b: int): $R.result(int, int)
 
-#pub fn buf_flush(w: !buf_writer): $R.result(int)
+#pub fn buf_flush(w: !buf_writer): $R.result(int, int)
 
-#pub fn buf_writer_close(w: buf_writer): $R.result(int)
+#pub fn buf_writer_close(w: buf_writer): $R.result(int, int)
 
 (* ============================================================
    Internal helpers
@@ -399,7 +399,7 @@ implement buf_writer_create(f) = let
   val buf = $A.alloc<byte>(4096)
 in buf_writer_mk(f, buf, 0) end
 
-fn _buf_do_flush(w: !buf_writer): $R.result(int) = let
+fn _buf_do_flush(w: !buf_writer): $R.result(int, int) = let
   val+ @buf_writer_mk(f, buf, pos) = w
 in
   if pos <= 0 then let
@@ -493,7 +493,7 @@ end
 
 implement buf_writer_close(w) = let
   val flush_r = _buf_do_flush(w)
-  val () = $R.discard<int>(flush_r)
+  val () = $R.discard<int><int>(flush_r)
   val+ ~buf_writer_mk(f, buf, _) = w
   val () = $A.free<byte>(buf)
 in file_close(f) end
