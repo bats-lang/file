@@ -14,6 +14,8 @@
 
 $UNSAFE begin
 %{#
+#ifndef _FILE_RUNTIME_DEFINED
+#define _FILE_RUNTIME_DEFINED
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -54,6 +56,7 @@ static int _file_closedir(void *dirp) {
 static int _file_ptr_nonnull(void *p) {
   return p != (void*)0 ? 1 : 0;
 }
+#endif
 %}
 end
 
