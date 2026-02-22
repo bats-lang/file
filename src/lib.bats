@@ -56,6 +56,21 @@ static int _file_closedir(void *dirp) {
 static int _file_ptr_nonnull(void *p) {
   return p != (void*)0 ? 1 : 0;
 }
+static int _file_chdir(const char *path) {
+  return chdir(path);
+}
+static long _file_mtime(const char *path) {
+  struct stat st;
+  if (stat(path, &st) == 0) return (long)st.st_mtime;
+  return -1;
+}
+static int _file_exists(const char *path) {
+  struct stat st;
+  return stat(path, &st) == 0 ? 1 : 0;
+}
+static int _file_mkdir(const char *path, int mode) {
+  return mkdir(path, mode);
+}
 #endif
 %}
 end
@@ -121,6 +136,26 @@ end
   (d: !dir, name_buf: !$A.arr(byte, l, n), max_len: int n): $R.option(int)
 
 #pub fn dir_close(d: dir): $R.result(int, int)
+
+(* ============================================================
+   Extra POSIX operations
+   ============================================================ *)
+
+#pub fn file_chdir
+  {lb:agz}{n:pos | n < 1048576}
+  (path: !$A.borrow(byte, lb, n), path_len: int n): $R.result(int, int)
+
+#pub fn file_mtime
+  {lb:agz}{n:pos | n < 1048576}
+  (path: !$A.borrow(byte, lb, n), path_len: int n): $R.result(int, int)
+
+#pub fn file_exists
+  {lb:agz}{n:pos | n < 1048576}
+  (path: !$A.borrow(byte, lb, n), path_len: int n): bool
+
+#pub fn file_mkdir
+  {lb:agz}{n:pos | n < 1048576}
+  (path: !$A.borrow(byte, lb, n), path_len: int n, mode: int): $R.result(int, int)
 
 (* ============================================================
    Buffered reader
@@ -257,6 +292,47 @@ implement dir_close(d) = let
   val+ ~dir_mk(dp) = d
   val nonnull = $extfcall(int, "_file_ptr_nonnull", dp)
   val r = if nonnull > 0 then $extfcall(int, "_file_closedir", dp) else ~1
+in
+  if $AR.eq_int_int(r, 0) then $R.ok(0)
+  else $R.err(r)
+end
+
+(* ============================================================
+   Extra POSIX operation implementations
+   ============================================================ *)
+
+implement file_chdir {lb}{n} (path, path_len) = let
+  val cpath = _with_cpath(path, path_len)
+  val r = $extfcall(int, "_file_chdir",
+    $UNSAFE begin $UNSAFE.castvwtp1{ptr}(cpath) end)
+  val () = $A.free<byte>(cpath)
+in
+  if $AR.eq_int_int(r, 0) then $R.ok(0)
+  else $R.err(r)
+end
+
+implement file_mtime {lb}{n} (path, path_len) = let
+  val cpath = _with_cpath(path, path_len)
+  val mt = $extfcall(int, "_file_mtime",
+    $UNSAFE begin $UNSAFE.castvwtp1{ptr}(cpath) end)
+  val () = $A.free<byte>(cpath)
+in
+  if mt >= 0 then $R.ok(mt)
+  else $R.err(~1)
+end
+
+implement file_exists {lb}{n} (path, path_len) = let
+  val cpath = _with_cpath(path, path_len)
+  val r = $extfcall(int, "_file_exists",
+    $UNSAFE begin $UNSAFE.castvwtp1{ptr}(cpath) end)
+  val () = $A.free<byte>(cpath)
+in r > 0 end
+
+implement file_mkdir {lb}{n} (path, path_len, mode) = let
+  val cpath = _with_cpath(path, path_len)
+  val r = $extfcall(int, "_file_mkdir",
+    $UNSAFE begin $UNSAFE.castvwtp1{ptr}(cpath) end, mode)
+  val () = $A.free<byte>(cpath)
 in
   if $AR.eq_int_int(r, 0) then $R.ok(0)
   else $R.err(r)
