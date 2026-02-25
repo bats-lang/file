@@ -26,7 +26,13 @@ static int _file_open(const char *path, int flags, int mode) {
   return open(path, flags, mode);
 }
 static int _file_read(int fd, void *buf, int len) {
-  return (int)read(fd, buf, (unsigned int)len);
+  int total = 0;
+  while (total < len) {
+    int n = (int)read(fd, (char *)buf + total, (unsigned int)(len - total));
+    if (n <= 0) break;
+    total += n;
+  }
+  return total;
 }
 static int _file_write(int fd, const void *buf, int len) {
   return (int)write(fd, buf, (unsigned int)len);
