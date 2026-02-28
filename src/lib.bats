@@ -369,29 +369,20 @@ implement buf_read {l}{n} (r, dst, len) = let
 in
   if avail > 0 then let
     val to_copy = (if avail < len then avail else len): int
-    val pos1 = g1ofg0(pos)
-  in
-    if pos1 >= 0 then
-      if pos1 < 4096 then let
-        fun loop {l:agz}{n:pos}{lb:agz}{k:nat | k <= n} .<n - k>.
-          (dst: !$A.arr(byte, l, n), src: !$A.arr(byte, lb, 4096),
-           di: int k, si: int, n: int n, count: int): void =
-          if di >= n then ()
-          else if di >= count then ()
-          else let val si1 = g1ofg0(si) in
-            if si1 >= 0 then
-              if si1 < 4096 then let
-                val () = $A.set<byte>(dst, di, $A.get<byte>(src, si1))
-              in loop(dst, src, di + 1, si + 1, n, count) end
-              else ()
-            else ()
-          end
-        val () = loop(dst, ibuf, 0, pos, len, to_copy)
-        val () = pos := pos + to_copy
-        prval () = fold@(r)
-      in $R.some(to_copy) end
-      else let prval () = fold@(r) in $R.some(0) end
-    else let prval () = fold@(r) in $R.some(0) end
+    val pos1 = $AR.checked_idx(pos, 4096)
+    fun loop {l:agz}{n:pos}{lb:agz}{k:nat | k <= n} .<n - k>.
+      (dst: !$A.arr(byte, l, n), src: !$A.arr(byte, lb, 4096),
+       di: int k, si: int, n: int n, count: int): void =
+      if di >= n then ()
+      else if di >= count then ()
+      else let
+        val si1 = $AR.checked_idx(si, 4096)
+        val () = $A.set<byte>(dst, di, $A.get<byte>(src, si1))
+      in loop(dst, src, di + 1, si + 1, n, count) end
+    val () = loop(dst, ibuf, 0, pos, len, to_copy)
+    val () = pos := pos + to_copy
+    prval () = fold@(r)
+  in $R.some(to_copy) end
   end
   else let
     prval () = fold@(r)
@@ -413,61 +404,47 @@ in
     else $R.none()
   end
   else let
-    val pos1 = g1ofg0(pos)
+    val pos1 = $AR.checked_idx(pos, 4096)
+    fun scan {lb:agz}{k:nat | k <= 4096} .<4096 - k>.
+      (ibuf: !$A.arr(byte, lb, 4096), from: int k, limit: int): int =
+      if from >= limit then ~1
+      else if from >= 4096 then ~1
+      else if byte2int0($A.get<byte>(ibuf, from)) = 10 then from
+      else scan(ibuf, from + 1, limit)
+    val nl_pos = scan(ibuf, pos1, (if filled < 4096 then filled else 4096))
   in
-    if pos1 >= 0 then
-      if pos1 < 4096 then let
-        fun scan {lb:agz}{k:nat | k <= 4096} .<4096 - k>.
-          (ibuf: !$A.arr(byte, lb, 4096), from: int k, limit: int): int =
-          if from >= limit then ~1
-          else if from >= 4096 then ~1
-          else if byte2int0($A.get<byte>(ibuf, from)) = 10 then from
-          else scan(ibuf, from + 1, limit)
-        val nl_pos = scan(ibuf, pos1, (if filled < 4096 then filled else 4096))
-      in
-        if nl_pos >= 0 then let
-          val line_len = nl_pos - pos
-          val copy_len = (if line_len > max_len then max_len else line_len): int
-          fun cloop {l:agz}{n:pos}{lb:agz}{k:nat | k <= n} .<n - k>.
-            (dst: !$A.arr(byte, l, n), src: !$A.arr(byte, lb, 4096),
-             di: int k, si: int, n: int n, count: int): void =
-            if di >= n then ()
-            else if di >= count then ()
-            else let val si1 = g1ofg0(si) in
-              if si1 >= 0 then
-                if si1 < 4096 then let
-                  val () = $A.set<byte>(dst, di, $A.get<byte>(src, si1))
-                in cloop(dst, src, di + 1, si + 1, n, count) end
-                else ()
-              else ()
-            end
-          val () = cloop(buf, ibuf, 0, pos, max_len, copy_len)
-          val () = pos := nl_pos + 1
-          prval () = fold@(r)
-        in $R.some(copy_len) end
+    if nl_pos >= 0 then let
+      val line_len = nl_pos - pos
+      val copy_len = (if line_len > max_len then max_len else line_len): int
+      fun cloop {l:agz}{n:pos}{lb:agz}{k:nat | k <= n} .<n - k>.
+        (dst: !$A.arr(byte, l, n), src: !$A.arr(byte, lb, 4096),
+         di: int k, si: int, n: int n, count: int): void =
+        if di >= n then ()
+        else if di >= count then ()
         else let
-          val rest_len = filled - pos
-          val copy_len = (if rest_len > max_len then max_len else rest_len): int
-          fun cloop2 {l:agz}{n:pos}{lb:agz}{k:nat | k <= n} .<n - k>.
-            (dst: !$A.arr(byte, l, n), src: !$A.arr(byte, lb, 4096),
-             di: int k, si: int, n: int n, count: int): void =
-            if di >= n then ()
-            else if di >= count then ()
-            else let val si1 = g1ofg0(si) in
-              if si1 >= 0 then
-                if si1 < 4096 then let
-                  val () = $A.set<byte>(dst, di, $A.get<byte>(src, si1))
-                in cloop2(dst, src, di + 1, si + 1, n, count) end
-                else ()
-              else ()
-            end
-          val () = cloop2(buf, ibuf, 0, pos, max_len, copy_len)
-          val () = pos := filled
-          prval () = fold@(r)
-        in $R.some(copy_len) end
-      end
-      else let prval () = fold@(r) in $R.none() end
-    else let prval () = fold@(r) in $R.none() end
+          val si1 = $AR.checked_idx(si, 4096)
+          val () = $A.set<byte>(dst, di, $A.get<byte>(src, si1))
+        in cloop(dst, src, di + 1, si + 1, n, count) end
+      val () = cloop(buf, ibuf, 0, pos, max_len, copy_len)
+      val () = pos := nl_pos + 1
+      prval () = fold@(r)
+    in $R.some(copy_len) end
+    else let
+      val rest_len = filled - pos
+      val copy_len = (if rest_len > max_len then max_len else rest_len): int
+      fun cloop2 {l:agz}{n:pos}{lb:agz}{k:nat | k <= n} .<n - k>.
+        (dst: !$A.arr(byte, l, n), src: !$A.arr(byte, lb, 4096),
+         di: int k, si: int, n: int n, count: int): void =
+        if di >= n then ()
+        else if di >= count then ()
+        else let
+          val si1 = $AR.checked_idx(si, 4096)
+          val () = $A.set<byte>(dst, di, $A.get<byte>(src, si1))
+        in cloop2(dst, src, di + 1, si + 1, n, count) end
+      val () = cloop2(buf, ibuf, 0, pos, max_len, copy_len)
+      val () = pos := filled
+      prval () = fold@(r)
+    in $R.some(copy_len) end
   end
 end
 
@@ -511,26 +488,13 @@ implement buf_flush(w) = _buf_do_flush(w)
 
 implement buf_write_byte(w, b) = let
   val+ @buf_writer_mk(f, buf, pos) = w
-  val pos1 = g1ofg0(pos)
+  val pos1 = $AR.checked_idx(pos, 4096)
+  val () = $A.set<byte>(buf, pos1, $A.int2byte($AR.checked_byte(b)))
+  val () = pos := pos + 1
+  prval () = fold@(w)
 in
-  if pos1 >= 0 then
-    if pos1 < 4096 then let
-      val () = $A.set<byte>(buf, pos1, $A.int2byte($AR.checked_byte(b)))
-      val () = pos := pos + 1
-      prval () = fold@(w)
-    in
-      if pos1 + 1 >= 4096 then _buf_do_flush(w)
-      else $R.ok(1)
-    end
-    else let
-      prval () = fold@(w)
-      val r = _buf_do_flush(w)
-    in
-      case+ r of
-      | ~$R.ok(_) => buf_write_byte(w, b)
-      | ~$R.err(e) => $R.err(e)
-    end
-  else let prval () = fold@(w) in $R.err(~1) end
+  if pos1 + 1 >= 4096 then _buf_do_flush(w)
+  else $R.ok(1)
 end
 
 implement buf_write {lb}{n} (w, data, len) = let
@@ -538,33 +502,23 @@ implement buf_write {lb}{n} (w, data, len) = let
   val avail = 4096 - pos
 in
   if len <= avail then let
-    val pos1 = g1ofg0(pos)
+    val pos1 = $AR.checked_idx(pos, 4096)
+    fun cloop
+      {ld:agz}{ls:agz}{n:pos}{k:nat | k <= n} .<n - k>.
+      (dst: !$A.arr(byte, ld, 4096), src: !$A.borrow(byte, ls, n),
+       di: int, si: int k, n: int n): void =
+      if si >= n then ()
+      else let
+        val di1 = $AR.checked_idx(di, 4096)
+        val () = $A.set<byte>(dst, di1, $A.read<byte>(src, si))
+      in cloop(dst, src, di + 1, si + 1, n) end
+    val () = cloop(buf, data, pos, 0, len)
+    val new_pos = pos + len
+    val () = pos := new_pos
+    prval () = fold@(w)
   in
-    if pos1 >= 0 then
-      if pos1 < 4096 then let
-        fun cloop
-          {ld:agz}{ls:agz}{n:pos}{k:nat | k <= n} .<n - k>.
-          (dst: !$A.arr(byte, ld, 4096), src: !$A.borrow(byte, ls, n),
-           di: int, si: int k, n: int n): void =
-          if si >= n then ()
-          else let val di1 = g1ofg0(di) in
-            if di1 >= 0 then
-              if di1 < 4096 then let
-                val () = $A.set<byte>(dst, di1, $A.read<byte>(src, si))
-              in cloop(dst, src, di + 1, si + 1, n) end
-              else ()
-            else ()
-          end
-        val () = cloop(buf, data, pos, 0, len)
-        val new_pos = pos + len
-        val () = pos := new_pos
-        prval () = fold@(w)
-      in
-        if new_pos >= 4096 then _buf_do_flush(w)
-        else $R.ok(len)
-      end
-      else let prval () = fold@(w) in $R.err(~1) end
-    else let prval () = fold@(w) in $R.err(~1) end
+    if new_pos >= 4096 then _buf_do_flush(w)
+    else $R.ok(len)
   end
   else let
     prval () = fold@(w)
