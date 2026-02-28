@@ -79,6 +79,7 @@ static int _file_mkdir(const char *path, int mode) {
 }
 #endif
 %}
+end
 
 (* ============================================================
    Open flags
@@ -581,5 +582,3 @@ implement buf_writer_close(w) = let
   val+ ~buf_writer_mk(f, buf, _) = w
   val () = $A.free<byte>(buf)
 in file_close(f) end
-
-end (* $UNSAFE *)
