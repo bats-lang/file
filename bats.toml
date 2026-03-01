@@ -2,3 +2,8 @@
 name = "file"
 kind = "lib"
 unsafe = true
+
+[dependencies]
+"arith" = ""
+"array" = ""
+"result" = ""
