@@ -79,6 +79,7 @@ static int _file_mkdir(const char *path, int mode) {
 }
 #endif
 %}
+end
 
 (* ============================================================
    Open flags
@@ -222,8 +223,8 @@ in cpath end
 
 implement file_open {lb}{n} (path, path_len, flags, mode) = let
   val cpath = _with_cpath(path, path_len)
-  val rawfd = $extfcall(int, "_file_open",
-    $UNSAFE.castvwtp1{ptr}(cpath), flags, mode)
+  val rawfd = $UNSAFE begin $extfcall(int, "_file_open",
+    $UNSAFE.castvwtp1{ptr}(cpath), flags, mode) end
   val () = $A.free<byte>(cpath)
 in
   if rawfd >= 0 then $R.ok(fd_mk(rawfd))
@@ -232,8 +233,8 @@ end
 
 implement file_read {l}{n} (f, buf, len) = let
   val+ @fd_mk(rawfd) = f
-  val r = $extfcall(int, "_file_read", rawfd,
-    $UNSAFE.castvwtp1{ptr}(buf), len)
+  val r = $UNSAFE begin $extfcall(int, "_file_read", rawfd,
+    $UNSAFE.castvwtp1{ptr}(buf), len) end
   prval () = fold@(f)
 in
   if r >= 0 then $R.ok(r)
@@ -242,8 +243,8 @@ end
 
 implement file_write {lb}{n} (f, buf, len) = let
   val+ @fd_mk(rawfd) = f
-  val r = $extfcall(int, "_file_write", rawfd,
-    $UNSAFE.castvwtp1{ptr}(buf), len)
+  val r = $UNSAFE begin $extfcall(int, "_file_write", rawfd,
+    $UNSAFE.castvwtp1{ptr}(buf), len) end
   prval () = fold@(f)
 in
   if r >= 0 then $R.ok(r)
@@ -252,7 +253,7 @@ end
 
 implement file_close(f) = let
   val+ ~fd_mk(rawfd) = f
-  val r = $extfcall(int, "_file_close", rawfd)
+  val r = $UNSAFE begin $extfcall(int, "_file_close", rawfd) end
 in
   if $AR.eq_int_int(r, 0) then $R.ok(0)
   else $R.err(r)
@@ -260,8 +261,8 @@ end
 
 implement file_size {lb}{n} (path, path_len) = let
   val cpath = _with_cpath(path, path_len)
-  val sz = $extfcall(int, "_file_stat_size",
-    $UNSAFE.castvwtp1{ptr}(cpath))
+  val sz = $UNSAFE begin $extfcall(int, "_file_stat_size",
+    $UNSAFE.castvwtp1{ptr}(cpath)) end
   val () = $A.free<byte>(cpath)
 in
   if sz >= 0 then $R.ok(sz)
@@ -274,10 +275,10 @@ end
 
 implement dir_open {lb}{n} (path, path_len) = let
   val cpath = _with_cpath(path, path_len)
-  val dp = $extfcall(ptr, "_file_opendir",
-    $UNSAFE.castvwtp1{ptr}(cpath))
+  val dp = $UNSAFE begin $extfcall(ptr, "_file_opendir",
+    $UNSAFE.castvwtp1{ptr}(cpath)) end
   val () = $A.free<byte>(cpath)
-  val nonnull = $extfcall(int, "_file_ptr_nonnull", dp)
+  val nonnull = $UNSAFE begin $extfcall(int, "_file_ptr_nonnull", dp) end
 in
   if nonnull > 0 then $R.ok(dir_mk(dp))
   else $R.err(~1)
@@ -285,8 +286,8 @@ end
 
 implement dir_next {l}{n} (d, name_buf, max_len) = let
   val+ @dir_mk(dp) = d
-  val r = $extfcall(int, "_file_readdir", dp,
-    $UNSAFE.castvwtp1{ptr}(name_buf), max_len)
+  val r = $UNSAFE begin $extfcall(int, "_file_readdir", dp,
+    $UNSAFE.castvwtp1{ptr}(name_buf), max_len) end
   prval () = fold@(d)
 in
   if r >= 0 then $R.some(r)
@@ -295,8 +296,8 @@ end
 
 implement dir_close(d) = let
   val+ ~dir_mk(dp) = d
-  val nonnull = $extfcall(int, "_file_ptr_nonnull", dp)
-  val r = if nonnull > 0 then $extfcall(int, "_file_closedir", dp) else ~1
+  val nonnull = $UNSAFE begin $extfcall(int, "_file_ptr_nonnull", dp) end
+  val r = if nonnull > 0 then $UNSAFE begin $extfcall(int, "_file_closedir", dp) end else ~1
 in
   if $AR.eq_int_int(r, 0) then $R.ok(0)
   else $R.err(r)
@@ -308,8 +309,8 @@ end
 
 implement file_chdir {lb}{n} (path, path_len) = let
   val cpath = _with_cpath(path, path_len)
-  val r = $extfcall(int, "_file_chdir",
-    $UNSAFE.castvwtp1{ptr}(cpath))
+  val r = $UNSAFE begin $extfcall(int, "_file_chdir",
+    $UNSAFE.castvwtp1{ptr}(cpath)) end
   val () = $A.free<byte>(cpath)
 in
   if $AR.eq_int_int(r, 0) then $R.ok(0)
@@ -318,8 +319,8 @@ end
 
 implement file_mtime {lb}{n} (path, path_len) = let
   val cpath = _with_cpath(path, path_len)
-  val mt = $extfcall(int, "_file_mtime",
-    $UNSAFE.castvwtp1{ptr}(cpath))
+  val mt = $UNSAFE begin $extfcall(int, "_file_mtime",
+    $UNSAFE.castvwtp1{ptr}(cpath)) end
   val () = $A.free<byte>(cpath)
 in
   if mt >= 0 then $R.ok(mt)
@@ -328,15 +329,15 @@ end
 
 implement file_exists {lb}{n} (path, path_len) = let
   val cpath = _with_cpath(path, path_len)
-  val r = $extfcall(int, "_file_exists",
-    $UNSAFE.castvwtp1{ptr}(cpath))
+  val r = $UNSAFE begin $extfcall(int, "_file_exists",
+    $UNSAFE.castvwtp1{ptr}(cpath)) end
   val () = $A.free<byte>(cpath)
 in r > 0 end
 
 implement file_mkdir {lb}{n} (path, path_len, mode) = let
   val cpath = _with_cpath(path, path_len)
-  val r = $extfcall(int, "_file_mkdir",
-    $UNSAFE.castvwtp1{ptr}(cpath), mode)
+  val r = $UNSAFE begin $extfcall(int, "_file_mkdir",
+    $UNSAFE.castvwtp1{ptr}(cpath), mode) end
   val () = $A.free<byte>(cpath)
 in
   if $AR.eq_int_int(r, 0) then $R.ok(0)
@@ -354,8 +355,8 @@ in buf_reader_mk(f, buf, 0, 0) end
 fn _buf_refill(r: !buf_reader): int = let
   val+ @buf_reader_mk(f, buf, filled, pos) = r
   val+ @fd_mk(rawfd) = f
-  val n = $extfcall(int, "_file_read", rawfd,
-    $UNSAFE.castvwtp1{ptr}(buf), 4096)
+  val n = $UNSAFE begin $extfcall(int, "_file_read", rawfd,
+    $UNSAFE.castvwtp1{ptr}(buf), 4096) end
   prval () = fold@(f)
   val () = filled := (if n > 0 then n else 0)
   val () = pos := 0
@@ -382,7 +383,6 @@ in
     val () = pos := pos + to_copy
     prval () = fold@(r)
   in $R.some(to_copy) end
-  end
   else let
     prval () = fold@(r)
     val n = _buf_refill(r)
@@ -469,8 +469,8 @@ in
   else let
     val @(fz, bv) = $A.freeze<byte>(buf)
     val+ @fd_mk(rawfd) = f
-    val written = $extfcall(int, "_file_write", rawfd,
-      $UNSAFE.castvwtp1{ptr}(bv), pos)
+    val written = $UNSAFE begin $extfcall(int, "_file_write", rawfd,
+      $UNSAFE.castvwtp1{ptr}(bv), pos) end
     prval () = fold@(f)
     val () = $A.drop<byte>(fz, bv)
     val buf2 = $A.thaw<byte>(fz)
@@ -535,5 +535,3 @@ implement buf_writer_close(w) = let
   val+ ~buf_writer_mk(f, buf, _) = w
   val () = $A.free<byte>(buf)
 in file_close(f) end
-
-end (* $UNSAFE *)
