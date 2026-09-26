@@ -68,14 +68,6 @@ static int _file_stat_size(const char *path) {
 static void *_file_opendir(const char *path) {
   return (void *)opendir(path);
 }
-static int _file_readdir(void *dirp, char *name_buf, int max_len) {
-  struct dirent *e = readdir(dirp);
-  if (!e) return -1;
-  int len = (int)strlen(e->d_name);
-  if (len > max_len) len = max_len;
-  memcpy(name_buf, e->d_name, len);
-  return len;
-}
 static int _file_closedir(void *dirp) {
   return closedir(dirp);
 }
@@ -234,12 +226,6 @@ end
 #pub fn dir_open
   {lb:agz}{n:pos | n < 1048576}
   (path: !$A.borrow(byte, lb, n), path_len: int n): $R.result(dir, int)
-
-(* Length of the next entry's name, copied to name_buf[0, k) and
-   truncated to max_len; none at the end of the directory. *)
-#pub fn dir_next
-  {l:agz}{n:pos}
-  (d: !dir, name_buf: !$A.arr(byte, l, n), max_len: int n): $R.option([k:nat | k <= n] int k)
 
 #pub fn dir_close(d: dir): $R.result(int, int)
 
@@ -415,45 +401,6 @@ in
   if nonnull > 0 then $R.ok(dir_mk(dp))
   else $R.err(~1)
 end
-
-implement dir_next {l}{n} (d, name_buf, max_len) = let
-  val+ @dir_mk(dp) = d
-  val r = $UNSAFE begin $extfcall([k:int | k <= n] int k, "_file_readdir", dp,
-    $UNSAFE.castvwtp1{ptr}(name_buf), max_len) end
-  prval () = fold@(d)
-in
-  if r >= 0 then $R.some(r)
-  else $R.none()
-end
-
-implement dir_read {lb}{n} (path, path_len) = let
-  val cpath = _with_cpath(path, path_len)
-  val p = $UNSAFE begin $extfcall(ptr, "_file_dir_read",
-    $UNSAFE.castvwtp1{ptr}(cpath)) end
-  val () = $A.free<byte>(cpath)
-in
-  if ptr_isnot_null(p) then let
-    val k = $UNSAFE begin $extfcall([k:nat] int k, "_file_entries_count", p) end
-  in $R.ok(entries_mk(p, k)) end
-  else $R.err(~1)
-end
-
-implement entries_count {n} (es) = let
-  val+ @entries_mk(_, k) = es
-  val r = k
-  prval () = fold@(es)
-in r end
-
-implement entries_name {n}{i}{l}{m} (es, i, name_buf, max_len) = let
-  val+ @entries_mk(p, _) = es
-  val r = $UNSAFE begin $extfcall([k:nat | k <= m] int k, "_file_entries_name", p, i,
-    $UNSAFE.castvwtp1{ptr}(name_buf), max_len) end
-  prval () = fold@(es)
-in r end
-
-implement entries_free {n} (es) = let
-  val+ ~entries_mk(p, _) = es
-in $UNSAFE begin $extfcall(void, "_file_entries_free", p) end end
 
 implement dir_close(d) = let
   val+ ~dir_mk(dp) = d
