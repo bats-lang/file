@@ -25,7 +25,9 @@ fail=0
 check() { # dir -> runs lock + check, log in $TMP/<name>.log
   w="$TMP/w-$(basename "$1")"
   rm -rf "$w"; cp -R "$1" "$w"
-  (cd "$w" && bats lock --repository "$TMP/repo" && bats check --repository "$TMP/repo") \
+  # --dev: the checkout uploads as a dev version, which bats lock skips
+  # without it (as the Rust bats does).
+  (cd "$w" && bats lock --dev --repository "$TMP/repo" && bats check --repository "$TMP/repo") \
     > "$TMP/$(basename "$1").log" 2>&1
 }
 
