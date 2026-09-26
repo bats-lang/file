@@ -21,6 +21,7 @@ $UNSAFE begin
 #include <sys/stat.h>
 #include <dirent.h>
 #include <string.h>
+#include <errno.h>
 
 /* flags are file's own values (the O_* stadefs below); the host's
    O_* bits differ between systems (O_CREAT is 64 on Linux, 512 on
@@ -35,13 +36,19 @@ static int _file_open(const char *path, int flags, int mode) {
   if (flags & 64) f |= O_CREAT;
   if (flags & 512) f |= O_TRUNC;
   if (flags & 1024) f |= O_APPEND;
-  return open(path, f, mode);
+  int fd = open(path, f, mode);
+  return fd >= 0 ? fd : -errno;
 }
+/* Reads until len bytes or EOF; a failure before any byte is -errno,
+   after some bytes those bytes: the next read reports it. EINTR is
+   retried, as the readers of Rust do. */
 static int _file_read(int fd, void *buf, int len) {
   int total = 0;
   while (total < len) {
     int n = (int)read(fd, (char *)buf + total, (unsigned int)(len - total));
-    if (n <= 0) break;
+    if (n < 0 && errno == EINTR) continue;
+    if (n < 0) return total > 0 ? total : -errno;
+    if (n == 0) break;
     total += n;
   }
   return total;
@@ -126,13 +133,15 @@ end
    File operations
    ============================================================ *)
 
+(* The open file, or the errno (> 0) of why it could not be opened,
+   as Rust's io::Error carries it. *)
 #pub fn file_open
   {lb:agz}{n:pos | n < 1048576}
   (path: !$A.borrow(byte, lb, n), path_len: int n,
    flags: int, mode: int): $R.result(fd, int)
 
 (* Bytes read into buf[0, k), at most len (read(2)'s contract), or
-   the error code. *)
+   the errno (> 0) of a read that failed before any byte. *)
 #pub fn file_read
   {l:agz}{n:pos}
   (f: !fd, buf: !$A.arr(byte, l, n), len: int n): $R.result([k:nat | k <= n] int k, int)
@@ -252,7 +261,7 @@ implement file_open {lb}{n} (path, path_len, flags, mode) = let
   val () = $A.free<byte>(cpath)
 in
   if rawfd >= 0 then $R.ok(fd_mk(rawfd))
-  else $R.err(rawfd)
+  else $R.err(~rawfd)
 end
 
 implement file_read {l}{n} (f, buf, len) = let
@@ -262,7 +271,7 @@ implement file_read {l}{n} (f, buf, len) = let
   prval () = fold@(f)
 in
   if r >= 0 then $R.ok(r)
-  else $R.err(r)
+  else $R.err(~r)
 end
 
 implement file_write {lb}{n} (f, buf, len) = let
