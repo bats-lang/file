@@ -20,6 +20,7 @@ $UNSAFE begin
 #include <unistd.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 
@@ -78,51 +79,60 @@ static int _file_readdir(void *dirp, char *name_buf, int max_len) {
 static int _file_closedir(void *dirp) {
   return closedir(dirp);
 }
-/* All of a directory's entries, read in one pass. */
-typedef struct { int n; char **names; int *lens; } _file_entries_t;
+/* All of a directory's entries, read in one pass and sorted by name
+   (bytewise, a prefix before its extensions), so walks over them are
+   bounded and in the same order on every system. */
+typedef struct { char *name; int len; } _file_entry_t;
+typedef struct { int n; _file_entry_t *es; } _file_entries_t;
+static int _file_entry_cmp(const void *x, const void *y) {
+  const _file_entry_t *a = (const _file_entry_t *)x;
+  const _file_entry_t *b = (const _file_entry_t *)y;
+  int m = a->len < b->len ? a->len : b->len;
+  int c = memcmp(a->name, b->name, m);
+  if (c != 0) return c;
+  return a->len - b->len;
+}
 static void *_file_dir_read(const char *path) {
   DIR *d = opendir(path);
-  _file_entries_t *es;
+  _file_entries_t *r;
   struct dirent *e;
   int cap = 16;
   if (!d) return (void *)0;
-  es = (_file_entries_t *)malloc(sizeof(_file_entries_t));
-  es->n = 0;
-  es->names = (char **)malloc(cap * sizeof(char *));
-  es->lens = (int *)malloc(cap * sizeof(int));
+  r = (_file_entries_t *)malloc(sizeof(_file_entries_t));
+  r->n = 0;
+  r->es = (_file_entry_t *)malloc(cap * sizeof(_file_entry_t));
   while ((e = readdir(d)) != 0) {
     int len = (int)strlen(e->d_name);
     char *s = (char *)malloc(len > 0 ? len : 1);
-    if (es->n == cap) {
+    if (r->n == cap) {
       cap = 2 * cap;
-      es->names = (char **)realloc(es->names, cap * sizeof(char *));
-      es->lens = (int *)realloc(es->lens, cap * sizeof(int));
+      r->es = (_file_entry_t *)realloc(r->es, cap * sizeof(_file_entry_t));
     }
     memcpy(s, e->d_name, len);
-    es->names[es->n] = s;
-    es->lens[es->n] = len;
-    es->n++;
+    r->es[r->n].name = s;
+    r->es[r->n].len = len;
+    r->n++;
   }
   closedir(d);
-  return (void *)es;
+  qsort(r->es, r->n, sizeof(_file_entry_t), _file_entry_cmp);
+  return (void *)r;
 }
 static int _file_entries_count(void *p) {
   return ((_file_entries_t *)p)->n;
 }
 static int _file_entries_name(void *p, int i, char *name_buf, int max_len) {
-  _file_entries_t *es = (_file_entries_t *)p;
-  int len = es->lens[i];
+  _file_entry_t *e = &((_file_entries_t *)p)->es[i];
+  int len = e->len;
   if (len > max_len) len = max_len;
-  memcpy(name_buf, es->names[i], len);
+  memcpy(name_buf, e->name, len);
   return len;
 }
 static void _file_entries_free(void *p) {
-  _file_entries_t *es = (_file_entries_t *)p;
+  _file_entries_t *r = (_file_entries_t *)p;
   int i;
-  for (i = 0; i < es->n; i++) free(es->names[i]);
-  free(es->names);
-  free(es->lens);
-  free(es);
+  for (i = 0; i < r->n; i++) free(r->es[i].name);
+  free(r->es);
+  free(r);
 }
 static int _file_ptr_nonnull(void *p) {
   return p != (void*)0 ? 1 : 0;
@@ -185,8 +195,8 @@ end
 #pub datavtype dir =
   | dir_mk of (ptr)
 
-(* A directory's entries, read in one pass: n names, so a walk over them
-   is bounded by n. *)
+(* A directory's entries, read in one pass and sorted by name (bytewise):
+   n names, so a walk over them is bounded by n. *)
 #pub datavtype entries(int) =
   | {n:nat} entries_mk(n) of (ptr, int n)
 
@@ -233,7 +243,8 @@ end
 
 #pub fn dir_close(d: dir): $R.result(int, int)
 
-(* Every entry of the directory at path (including . and ..). *)
+(* Every entry of the directory at path (including . and ..), sorted by
+   name. *)
 #pub fn dir_read
   {lb:agz}{n:pos | n < 1048576}
   (path: !$A.borrow(byte, lb, n), path_len: int n): $R.result([k:nat] entries(k), int)

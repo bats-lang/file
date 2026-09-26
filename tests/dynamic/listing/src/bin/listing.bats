@@ -5,14 +5,28 @@
 #use str as S
 
 (* dir_read returns every entry of a directory, however many: 300 files
-   (more than the 200 a fuel-bounded walk used to stop at) plus . and ..
-   (the harness runs this in a scratch directory it owns). *)
+   (more than the 200 a fuel-bounded walk used to stop at) plus . and ..,
+   sorted by name (the harness runs this in a scratch directory it
+   owns). The files are created in reverse, so the order comes from the
+   sort. *)
 
-(* Creates ls.d/fDDD for i = 0 .. k-1 *)
-fun make {k,i:nat | i <= k; k <= 999} .<k - i>.
-  (i: int i, k: int k): void =
-  if i >= k then ()
+(* Prints entry i's name *)
+fn show {n:int}{i:nat | i < n}{l:agz}
+  (es: !$F.entries(n), i: int i, buf: !$A.arr(byte, l, 64)): void = let
+  val k = $F.entries_name(es, i, buf, 64)
+  fun put {j,m:nat | j <= m; m <= 64} .<m - j>. (buf: !$A.arr(byte, l, 64), j: int j, k: int m): void =
+    if j >= k then () else let
+      val () = print_char(int2char0(byte2int0($A.get<byte>(buf, j))))
+    in put(buf, j + 1, k) end
+  val () = put(buf, 0, k)
+in print_newline() end
+
+(* Creates ls.d/fDDD for i = k-1 down to 0 *)
+fun make {i:nat | i <= 999} .<i>.
+  (i: int i): void =
+  if i <= 0 then ()
   else let
+    val i = i - 1
     val p = $A.alloc<byte>(10)
     val () = $A.set<byte>(p, 0, $A.int2byte(108))
     val () = $A.set<byte>(p, 1, $A.int2byte(115))
@@ -29,7 +43,17 @@ fun make {k,i:nat | i <= k; k <= 999} .<k - i>.
       | ~$R.err(_) => println! ("FAIL: create ", i))
     val () = $A.drop<byte>(fz, bp)
     val () = $A.free<byte>($A.thaw<byte>(fz))
-  in make(i + 1, k) end
+  in make(i) end
+
+(* Prints entries 0, 1, 2 and 301 *)
+fn show_ends {n:int}{l:agz}
+  (es: !$F.entries(n), n: int n, buf: !$A.arr(byte, l, 64)): void =
+  if n > 301 then let
+    val () = show(es, 0, buf)
+    val () = show(es, 1, buf)
+    val () = show(es, 2, buf)
+  in show(es, 301, buf) end
+  else println! ("FAIL: only ", n, " entries")
 
 (* Number of names of length 4 starting with f, and of other names *)
 fun tally {n,i:nat | i <= n}{l:agz} .<n - i>.
@@ -47,12 +71,13 @@ implement main0 () = let
   var d = @[char][5]('l', 's', '.', 'd', '\000')
   val @(fd, bd) = $A.freeze<byte>($S.from_char_array(d, 5))
   val () = $R.discard<int><int>($F.file_mkdir(bd, 5, 493))
-  val () = make(0, 300)
+  val () = make(300)
   val () = (case+ $F.dir_read(bd, 5) of
     | ~$R.ok(es) => let
         val n = $F.entries_count(es)
         val buf = $A.alloc<byte>(64)
         val @(fs, others) = tally(es, 0, n, buf, 0, 0)
+        val () = show_ends(es, n, buf)
         val () = $A.free<byte>(buf)
         val () = $F.entries_free(es)
       in println! ("entries ", n, ", f names ", fs, ", others ", others) end
