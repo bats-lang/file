@@ -1,0 +1,10 @@
+[package]
+name = "mode"
+kind = "bin"
+
+[dependencies]
+"arith" = ""
+"array" = ""
+"result" = ""
+"str" = ""
+"file" = ""
