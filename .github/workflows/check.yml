@@ -45,3 +45,8 @@ jobs:
           git clone https://github.com/bats-lang/repository-prototype.git ~/repository
           bats lock --repository ~/repository
           bats check --repository ~/repository
+
+      - name: Dynamic tests
+        run: |
+          export PATH=~/bats-bin:$PATH
+          tests/dynamic/run.sh ~/repository
