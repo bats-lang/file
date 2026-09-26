@@ -11,6 +11,14 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 cp -R "$1" "$TMP/repo"
 (cd "$ROOT" && bats upload --repository "$TMP/repo" >/dev/null)
+# Keep only the archive just uploaded, so lock cannot pick a published
+# version instead (an uncommitted checkout uploads as <version>dev1,
+# which sorts below a release of the same commit).
+PKG=$(sed -n 's/^name *= *"\(.*\)"/\1/p' "$ROOT/bats.toml" | head -1)
+NEW=$(ls -t "$TMP/repo/$PKG"/*.bats | head -1)
+for a in "$TMP/repo/$PKG"/*.bats; do
+  [ "$a" = "$NEW" ] || rm -f "$a" "$a.sha256"
+done
 
 # A test that hangs must fail, not stall CI. `timeout` is GNU coreutils;
 # where it is missing the binary runs without a limit.

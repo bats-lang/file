@@ -50,3 +50,8 @@ jobs:
         run: |
           export PATH=~/bats-bin:$PATH
           tests/dynamic/run.sh ~/repository
+
+      - name: Static tests
+        run: |
+          export PATH=~/bats-bin:$PATH
+          tests/static/run.sh ~/repository

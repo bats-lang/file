@@ -1,0 +1,8 @@
+[package]
+name = "dir-name-past-end"
+kind = "lib"
+
+[dependencies]
+"array" = ""
+"file" = ""
+"result" = ""

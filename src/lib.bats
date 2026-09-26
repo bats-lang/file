@@ -115,9 +115,11 @@ end
   (path: !$A.borrow(byte, lb, n), path_len: int n,
    flags: int, mode: int): $R.result(fd, int)
 
+(* Bytes read into buf[0, k), at most len (read(2)'s contract), or
+   the error code. *)
 #pub fn file_read
   {l:agz}{n:pos}
-  (f: !fd, buf: !$A.arr(byte, l, n), len: int n): $R.result(int, int)
+  (f: !fd, buf: !$A.arr(byte, l, n), len: int n): $R.result([k:nat | k <= n] int k, int)
 
 #pub fn file_write
   {lb:agz}{n:pos}
@@ -137,9 +139,11 @@ end
   {lb:agz}{n:pos | n < 1048576}
   (path: !$A.borrow(byte, lb, n), path_len: int n): $R.result(dir, int)
 
+(* Length of the next entry's name, copied to name_buf[0, k) and
+   truncated to max_len; none at the end of the directory. *)
 #pub fn dir_next
   {l:agz}{n:pos}
-  (d: !dir, name_buf: !$A.arr(byte, l, n), max_len: int n): $R.option(int)
+  (d: !dir, name_buf: !$A.arr(byte, l, n), max_len: int n): $R.option([k:nat | k <= n] int k)
 
 #pub fn dir_close(d: dir): $R.result(int, int)
 
@@ -237,7 +241,7 @@ end
 
 implement file_read {l}{n} (f, buf, len) = let
   val+ @fd_mk(rawfd) = f
-  val r = $UNSAFE begin $extfcall(int, "_file_read", rawfd,
+  val r = $UNSAFE begin $extfcall([k:int | k <= n] int k, "_file_read", rawfd,
     $UNSAFE.castvwtp1{ptr}(buf), len) end
   prval () = fold@(f)
 in
@@ -290,7 +294,7 @@ end
 
 implement dir_next {l}{n} (d, name_buf, max_len) = let
   val+ @dir_mk(dp) = d
-  val r = $UNSAFE begin $extfcall(int, "_file_readdir", dp,
+  val r = $UNSAFE begin $extfcall([k:int | k <= n] int k, "_file_readdir", dp,
     $UNSAFE.castvwtp1{ptr}(name_buf), max_len) end
   prval () = fold@(d)
 in
