@@ -402,6 +402,35 @@ in
   else $R.err(~1)
 end
 
+implement dir_read {lb}{n} (path, path_len) = let
+  val cpath = _with_cpath(path, path_len)
+  val p = $UNSAFE begin $extfcall(ptr, "_file_dir_read",
+    $UNSAFE.castvwtp1{ptr}(cpath)) end
+  val () = $A.free<byte>(cpath)
+in
+  if ptr_isnot_null(p) then let
+    val k = $UNSAFE begin $extfcall([k:nat] int k, "_file_entries_count", p) end
+  in $R.ok(entries_mk(p, k)) end
+  else $R.err(~1)
+end
+
+implement entries_count {n} (es) = let
+  val+ @entries_mk(_, k) = es
+  val r = k
+  prval () = fold@(es)
+in r end
+
+implement entries_name {n}{i}{l}{m} (es, i, name_buf, max_len) = let
+  val+ @entries_mk(p, _) = es
+  val r = $UNSAFE begin $extfcall([k:nat | k <= m] int k, "_file_entries_name", p, i,
+    $UNSAFE.castvwtp1{ptr}(name_buf), max_len) end
+  prval () = fold@(es)
+in r end
+
+implement entries_free {n} (es) = let
+  val+ ~entries_mk(p, _) = es
+in $UNSAFE begin $extfcall(void, "_file_entries_free", p) end end
+
 implement dir_close(d) = let
   val+ ~dir_mk(dp) = d
   val nonnull = $UNSAFE begin $extfcall(int, "_file_ptr_nonnull", dp) end
