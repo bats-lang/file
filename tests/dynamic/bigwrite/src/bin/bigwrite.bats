@@ -7,8 +7,7 @@
 
 (* One byte, then a 5000-byte block (larger than the 4096-byte buffer)
    through buf_write; the file must hold exactly those 5001 bytes. The
-   previous implementation never returned from the second write.
-   Open flags are Linux values, as in the rest of bats-lang for now. *)
+   previous implementation never returned from the second write. *)
 fun fill {l:agz}{i:nat | i <= 5000} .<5000 - i>. (a: !$A.arr(byte, l, 5000), i: int i): void =
   if i >= 5000 then ()
   else let val () = $A.set<byte>(a, i, $A.int2byte($AR.low_byte(i))) in fill(a, i + 1) end

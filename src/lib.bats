@@ -22,8 +22,20 @@ $UNSAFE begin
 #include <dirent.h>
 #include <string.h>
 
+/* flags are file's own values (the O_* stadefs below); the host's
+   O_* bits differ between systems (O_CREAT is 64 on Linux, 512 on
+   macOS and the BSDs), so they are translated here. */
 static int _file_open(const char *path, int flags, int mode) {
-  return open(path, flags, mode);
+  int f;
+  switch (flags & 3) {
+    case 0: f = O_RDONLY; break;
+    case 1: f = O_WRONLY; break;
+    default: f = O_RDWR; break;
+  }
+  if (flags & 64) f |= O_CREAT;
+  if (flags & 512) f |= O_TRUNC;
+  if (flags & 1024) f |= O_APPEND;
+  return open(path, f, mode);
 }
 static int _file_read(int fd, void *buf, int len) {
   int total = 0;
@@ -84,6 +96,10 @@ end
 (* ============================================================
    Open flags
    ============================================================ *)
+
+(* Portable values for file_open's flags, combined with +: the access
+   mode (one of the first three) plus any of the rest. file_open
+   translates them to the host's open(2) flags. Other bits are ignored. *)
 
 #pub stadef O_RDONLY = 0
 #pub stadef O_WRONLY = 1
