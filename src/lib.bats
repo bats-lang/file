@@ -78,6 +78,52 @@ static int _file_readdir(void *dirp, char *name_buf, int max_len) {
 static int _file_closedir(void *dirp) {
   return closedir(dirp);
 }
+/* All of a directory's entries, read in one pass. */
+typedef struct { int n; char **names; int *lens; } _file_entries_t;
+static void *_file_dir_read(const char *path) {
+  DIR *d = opendir(path);
+  _file_entries_t *es;
+  struct dirent *e;
+  int cap = 16;
+  if (!d) return (void *)0;
+  es = (_file_entries_t *)malloc(sizeof(_file_entries_t));
+  es->n = 0;
+  es->names = (char **)malloc(cap * sizeof(char *));
+  es->lens = (int *)malloc(cap * sizeof(int));
+  while ((e = readdir(d)) != 0) {
+    int len = (int)strlen(e->d_name);
+    char *s = (char *)malloc(len > 0 ? len : 1);
+    if (es->n == cap) {
+      cap = 2 * cap;
+      es->names = (char **)realloc(es->names, cap * sizeof(char *));
+      es->lens = (int *)realloc(es->lens, cap * sizeof(int));
+    }
+    memcpy(s, e->d_name, len);
+    es->names[es->n] = s;
+    es->lens[es->n] = len;
+    es->n++;
+  }
+  closedir(d);
+  return (void *)es;
+}
+static int _file_entries_count(void *p) {
+  return ((_file_entries_t *)p)->n;
+}
+static int _file_entries_name(void *p, int i, char *name_buf, int max_len) {
+  _file_entries_t *es = (_file_entries_t *)p;
+  int len = es->lens[i];
+  if (len > max_len) len = max_len;
+  memcpy(name_buf, es->names[i], len);
+  return len;
+}
+static void _file_entries_free(void *p) {
+  _file_entries_t *es = (_file_entries_t *)p;
+  int i;
+  for (i = 0; i < es->n; i++) free(es->names[i]);
+  free(es->names);
+  free(es->lens);
+  free(es);
+}
 static int _file_ptr_nonnull(void *p) {
   return p != (void*)0 ? 1 : 0;
 }
@@ -139,6 +185,11 @@ end
 #pub datavtype dir =
   | dir_mk of (ptr)
 
+(* A directory's entries, read in one pass: n names, so a walk over them
+   is bounded by n. *)
+#pub datavtype entries(int) =
+  | {n:nat} entries_mk(n) of (ptr, int n)
+
 (* ============================================================
    File operations
    ============================================================ *)
@@ -181,6 +232,21 @@ end
   (d: !dir, name_buf: !$A.arr(byte, l, n), max_len: int n): $R.option([k:nat | k <= n] int k)
 
 #pub fn dir_close(d: dir): $R.result(int, int)
+
+(* Every entry of the directory at path (including . and ..). *)
+#pub fn dir_read
+  {lb:agz}{n:pos | n < 1048576}
+  (path: !$A.borrow(byte, lb, n), path_len: int n): $R.result([k:nat] entries(k), int)
+
+#pub fn entries_count {n:int} (es: !entries(n)): int n
+
+(* Length of entry i's name, copied to name_buf[0, k) and truncated to
+   max_len. *)
+#pub fn entries_name
+  {n:int}{i:nat | i < n}{l:agz}{m:pos}
+  (es: !entries(n), i: int i, name_buf: !$A.arr(byte, l, m), max_len: int m): [k:nat | k <= m] int k
+
+#pub fn entries_free {n:int} (es: entries(n)): void
 
 (* ============================================================
    Extra POSIX operations
@@ -348,6 +414,35 @@ in
   if r >= 0 then $R.some(r)
   else $R.none()
 end
+
+implement dir_read {lb}{n} (path, path_len) = let
+  val cpath = _with_cpath(path, path_len)
+  val p = $UNSAFE begin $extfcall(ptr, "_file_dir_read",
+    $UNSAFE.castvwtp1{ptr}(cpath)) end
+  val () = $A.free<byte>(cpath)
+in
+  if ptr_isnot_null(p) then let
+    val k = $UNSAFE begin $extfcall([k:nat] int k, "_file_entries_count", p) end
+  in $R.ok(entries_mk(p, k)) end
+  else $R.err(~1)
+end
+
+implement entries_count {n} (es) = let
+  val+ @entries_mk(_, k) = es
+  val r = k
+  prval () = fold@(es)
+in r end
+
+implement entries_name {n}{i}{l}{m} (es, i, name_buf, max_len) = let
+  val+ @entries_mk(p, _) = es
+  val r = $UNSAFE begin $extfcall([k:nat | k <= m] int k, "_file_entries_name", p, i,
+    $UNSAFE.castvwtp1{ptr}(name_buf), max_len) end
+  prval () = fold@(es)
+in r end
+
+implement entries_free {n} (es) = let
+  val+ ~entries_mk(p, _) = es
+in $UNSAFE begin $extfcall(void, "_file_entries_free", p) end end
 
 implement dir_close(d) = let
   val+ ~dir_mk(dp) = d
