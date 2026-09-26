@@ -4,6 +4,9 @@
 # first); it must build and exit 0. Used where a property cannot be
 # expressed in types (e.g. which value a comparison returns).
 #
+# If the package has an `expected` file, the binary's output must match
+# it exactly.
+#
 # usage: tests/dynamic/run.sh <repository-dir>   (bats must be on PATH)
 set -eu
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -31,7 +34,8 @@ for d in "$ROOT"/tests/dynamic/*/; do
   n=$(basename "$d"); w="$TMP/w-$n"
   cp -R "$d" "$w"
   if (cd "$w" && bats lock --repository "$TMP/repo" && bats build --only debug --only native --repository "$TMP/repo") > "$TMP/$n.log" 2>&1 \
-     && (cd "$w" && $LIMIT "./dist/debug/$n") > "$TMP/$n.out" 2>&1; then
+     && (cd "$w" && $LIMIT "./dist/debug/$n") > "$TMP/$n.out" 2>&1 \
+     && { [ ! -f "$d/expected" ] || diff -u "$d/expected" "$TMP/$n.out"; }; then
     echo "ok   $n"
   else
     echo "FAIL $n"; grep -E 'error|FAIL' "$TMP/$n.log" "$TMP/$n.out" 2>/dev/null | head -10; fail=1
