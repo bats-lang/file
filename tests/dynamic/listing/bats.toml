@@ -1,0 +1,10 @@
+[package]
+name = "listing"
+kind = "bin"
+
+[dependencies]
+"arith" = ""
+"array" = ""
+"result" = ""
+"str" = ""
+"file" = ""
