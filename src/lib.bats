@@ -169,9 +169,12 @@ end
 
 #pub stadef BUF_SIZE = 4096
 
+(* filled bytes of the buffer are valid; pos <= filled is the next one
+   to hand out. Both bounds are in the type, so no access is checked at
+   runtime. *)
 #pub datavtype buf_reader =
-  | {lb:agz}
-    buf_reader_mk of (fd, $A.arr(byte, lb, BUF_SIZE), int, int)
+  | {lb:agz}{f,p:nat | p <= f; f <= BUF_SIZE}
+    buf_reader_mk of (fd, $A.arr(byte, lb, BUF_SIZE), int f, int p)
 
 #pub fn buf_reader_create(f: fd): buf_reader
 
@@ -189,9 +192,10 @@ end
    Buffered writer
    ============================================================ *)
 
+(* pos <= BUF_SIZE bytes are pending. *)
 #pub datavtype buf_writer =
-  | {lb:agz}
-    buf_writer_mk of (fd, $A.arr(byte, lb, BUF_SIZE), int)
+  | {lb:agz}{p:nat | p <= BUF_SIZE}
+    buf_writer_mk of (fd, $A.arr(byte, lb, BUF_SIZE), int p)
 
 #pub fn buf_writer_create(f: fd): buf_writer
 
@@ -352,99 +356,107 @@ implement buf_reader_create(f) = let
   val buf = $A.alloc<byte>(4096)
 in buf_reader_mk(f, buf, 0, 0) end
 
+(* dst[0..c) := src[p..p+c). *)
+fun _copy_out {ld,ls:agz}{n:pos}{p,c:nat | p + c <= BUF_SIZE; c <= n}{k:nat | k <= c} .<c - k>.
+  (dst: !$A.arr(byte, ld, n), src: !$A.arr(byte, ls, BUF_SIZE),
+   p: int p, k: int k, c: int c): void =
+  if k >= c then ()
+  else let
+    val () = $A.set<byte>(dst, k, $A.get<byte>(src, p + k))
+  in _copy_out(dst, src, p, k + 1, c) end
+
+(* Refill the buffer from the file. read(2) returns at most the count
+   asked for; that contract is stated in the FFI result type, which is
+   where this unsafe package vouches for its C code. *)
 fn _buf_refill(r: !buf_reader): int = let
   val+ @buf_reader_mk(f, buf, filled, pos) = r
   val+ @fd_mk(rawfd) = f
-  val n = $UNSAFE begin $extfcall(int, "_file_read", rawfd,
+  val n = $UNSAFE begin $extfcall([k:int | k <= BUF_SIZE] int k, "_file_read", rawfd,
     $UNSAFE.castvwtp1{ptr}(buf), 4096) end
   prval () = fold@(f)
-  val () = filled := (if n > 0 then n else 0)
+  val nf = (if n > 0 then n else 0): [k:nat | k <= BUF_SIZE] int k
+  val () = filled := nf
   val () = pos := 0
   prval () = fold@(r)
 in n end
 
-implement buf_read {l}{n} (r, dst, len) = let
+(* Hand out up to len available bytes; none when nothing is buffered. *)
+fn _buf_take {l:agz}{n:pos}
+  (r: !buf_reader, dst: !$A.arr(byte, l, n), len: int n): $R.option(int) = let
   val+ @buf_reader_mk(f, ibuf, filled, pos) = r
   val avail = filled - pos
 in
-  if avail > 0 then let
-    val to_copy = (if avail < len then avail else len): int
-    val pos1 = $AR.checked_idx(pos, 4096)
-    fun loop {l:agz}{n:pos}{lb:agz}{k:nat | k <= n} .<n - k>.
-      (dst: !$A.arr(byte, l, n), src: !$A.arr(byte, lb, 4096),
-       di: int k, si: int, n: int n, count: int): void =
-      if di >= n then ()
-      else if di >= count then ()
-      else let
-        val si1 = $AR.checked_idx(si, 4096)
-        val () = $A.set<byte>(dst, di, $A.get<byte>(src, si1))
-      in loop(dst, src, di + 1, si + 1, n, count) end
-    val () = loop(dst, ibuf, 0, pos, len, to_copy)
+  if avail <= 0 then let
+    prval () = fold@(r)
+  in $R.none() end
+  else let
+    val to_copy = min(avail, len)
+    val () = _copy_out(dst, ibuf, pos, 0, to_copy)
     val () = pos := pos + to_copy
     prval () = fold@(r)
   in $R.some(to_copy) end
-  else let
-    prval () = fold@(r)
-    val n = _buf_refill(r)
-  in
-    if n > 0 then buf_read(r, dst, len)
-    else $R.none()
-  end
 end
 
-implement buf_read_line {l}{n} (r, buf, max_len) = let
+implement buf_read {l}{n} (r, dst, len) = let
+  val first = _buf_take(r, dst, len)
+in
+  case+ first of
+  | ~$R.some(k) => $R.some(k)
+  | ~$R.none() => let
+      val n = _buf_refill(r)
+    in
+      if n > 0 then _buf_take(r, dst, len) else $R.none()
+    end
+end
+
+(* Index of the first newline in buf[i..lim), or ~1. *)
+fun _scan_nl {lb:agz}{i,lim:nat | i <= lim; lim <= BUF_SIZE} .<lim - i>.
+  (ibuf: !$A.arr(byte, lb, BUF_SIZE), i: int i, lim: int lim)
+  : [r:int | r == ~1 || (i <= r && r < lim)] int r =
+  if i >= lim then ~1
+  else if byte2int0($A.get<byte>(ibuf, i)) = 10 then i
+  else _scan_nl(ibuf, i + 1, lim)
+
+(* One line (without the newline) from the buffered bytes, truncated to
+   max_len; none when nothing is buffered. Without a newline, the rest of
+   the buffer is returned. *)
+fn _buf_line {l:agz}{n:pos}
+  (r: !buf_reader, buf: !$A.arr(byte, l, n), max_len: int n): $R.option(int) = let
   val+ @buf_reader_mk(f, ibuf, filled, pos) = r
 in
   if pos >= filled then let
     prval () = fold@(r)
-    val n = _buf_refill(r)
-  in
-    if n > 0 then buf_read_line(r, buf, max_len)
-    else $R.none()
-  end
+  in $R.none() end
   else let
-    val pos1 = $AR.checked_idx(pos, 4096)
-    fun scan {lb:agz}{k:nat | k <= 4096} .<4096 - k>.
-      (ibuf: !$A.arr(byte, lb, 4096), from: int k, limit: int): int =
-      if from >= limit then ~1
-      else if from >= 4096 then ~1
-      else if byte2int0($A.get<byte>(ibuf, from)) = 10 then from
-      else scan(ibuf, from + 1, limit)
-    val nl_pos = scan(ibuf, pos1, (if filled < 4096 then filled else 4096))
+    val nl = _scan_nl(ibuf, pos, filled)
   in
-    if nl_pos >= 0 then let
-      val line_len = nl_pos - pos
-      val copy_len = (if line_len > max_len then max_len else line_len): int
-      fun cloop {l:agz}{n:pos}{lb:agz}{k:nat | k <= n} .<n - k>.
-        (dst: !$A.arr(byte, l, n), src: !$A.arr(byte, lb, 4096),
-         di: int k, si: int, n: int n, count: int): void =
-        if di >= n then ()
-        else if di >= count then ()
-        else let
-          val si1 = $AR.checked_idx(si, 4096)
-          val () = $A.set<byte>(dst, di, $A.get<byte>(src, si1))
-        in cloop(dst, src, di + 1, si + 1, n, count) end
-      val () = cloop(buf, ibuf, 0, pos, max_len, copy_len)
-      val () = pos := nl_pos + 1
+    if nl >= 0 then let
+      val line_len = nl - pos
+      val copy_len = min(line_len, max_len)
+      val () = _copy_out(buf, ibuf, pos, 0, copy_len)
+      val () = pos := nl + 1
       prval () = fold@(r)
     in $R.some(copy_len) end
     else let
-      val rest_len = filled - pos
-      val copy_len = (if rest_len > max_len then max_len else rest_len): int
-      fun cloop2 {l:agz}{n:pos}{lb:agz}{k:nat | k <= n} .<n - k>.
-        (dst: !$A.arr(byte, l, n), src: !$A.arr(byte, lb, 4096),
-         di: int k, si: int, n: int n, count: int): void =
-        if di >= n then ()
-        else if di >= count then ()
-        else let
-          val si1 = $AR.checked_idx(si, 4096)
-          val () = $A.set<byte>(dst, di, $A.get<byte>(src, si1))
-        in cloop2(dst, src, di + 1, si + 1, n, count) end
-      val () = cloop2(buf, ibuf, 0, pos, max_len, copy_len)
+      val rest = filled - pos
+      val copy_len = min(rest, max_len)
+      val () = _copy_out(buf, ibuf, pos, 0, copy_len)
       val () = pos := filled
       prval () = fold@(r)
     in $R.some(copy_len) end
   end
+end
+
+implement buf_read_line {l}{n} (r, buf, max_len) = let
+  val first = _buf_line(r, buf, max_len)
+in
+  case+ first of
+  | ~$R.some(k) => $R.some(k)
+  | ~$R.none() => let
+      val n = _buf_refill(r)
+    in
+      if n > 0 then _buf_line(r, buf, max_len) else $R.none()
+    end
 end
 
 implement buf_reader_close(r) = let
@@ -485,39 +497,48 @@ end
 
 implement buf_flush(w) = _buf_do_flush(w)
 
+(* A full buffer is flushed before the byte is stored; the byte is the
+   low 8 bits of b, as before, now without a cast. *)
 implement buf_write_byte(w, b) = let
   val+ @buf_writer_mk(f, buf, pos) = w
-  val pos1 = $AR.checked_idx(pos, 4096)
-  val () = $A.set<byte>(buf, pos1, $A.int2byte($AR.checked_byte(b)))
-  val () = pos := pos + 1
-  prval () = fold@(w)
 in
-  if pos1 + 1 >= 4096 then _buf_do_flush(w)
-  else $R.ok(1)
+  if pos < 4096 then let
+    val () = $A.set<byte>(buf, pos, $A.int2byte($AR.low_byte(b)))
+    val () = pos := pos + 1
+    val full = (pos >= 4096)
+    prval () = fold@(w)
+  in
+    if full then _buf_do_flush(w) else $R.ok(1)
+  end
+  else let
+    prval () = fold@(w)
+    val r = _buf_do_flush(w)
+  in
+    case+ r of
+    | ~$R.ok(_) => buf_write_byte(w, b)
+    | ~$R.err(e) => $R.err(e)
+  end
 end
+
+(* buf[p..p+c) := src[0..c). *)
+fun _copy_in {ld,ls:agz}{n:pos}{p,c:nat | p + c <= BUF_SIZE; c <= n}{k:nat | k <= c} .<c - k>.
+  (dst: !$A.arr(byte, ld, BUF_SIZE), src: !$A.borrow(byte, ls, n),
+   p: int p, k: int k, c: int c): void =
+  if k >= c then ()
+  else let
+    val () = $A.set<byte>(dst, p + k, $A.read<byte>(src, k))
+  in _copy_in(dst, src, p, k + 1, c) end
 
 implement buf_write {lb}{n} (w, data, len) = let
   val+ @buf_writer_mk(f, buf, pos) = w
-  val avail = 4096 - pos
 in
-  if len <= avail then let
-    val pos1 = $AR.checked_idx(pos, 4096)
-    fun cloop
-      {ld:agz}{ls:agz}{n:pos}{k:nat | k <= n} .<n - k>.
-      (dst: !$A.arr(byte, ld, 4096), src: !$A.borrow(byte, ls, n),
-       di: int, si: int k, n: int n): void =
-      if si >= n then ()
-      else let
-        val di1 = $AR.checked_idx(di, 4096)
-        val () = $A.set<byte>(dst, di1, $A.read<byte>(src, si))
-      in cloop(dst, src, di + 1, si + 1, n) end
-    val () = cloop(buf, data, pos, 0, len)
-    val new_pos = pos + len
-    val () = pos := new_pos
+  if pos + len <= 4096 then let
+    val () = _copy_in(buf, data, pos, 0, len)
+    val () = pos := pos + len
+    val full = (pos >= 4096)
     prval () = fold@(w)
   in
-    if new_pos >= 4096 then _buf_do_flush(w)
-    else $R.ok(len)
+    if full then _buf_do_flush(w) else $R.ok(len)
   end
   else let
     prval () = fold@(w)

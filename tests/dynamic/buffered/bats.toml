@@ -1,0 +1,9 @@
+[package]
+name = "buffered"
+kind = "bin"
+
+[dependencies]
+"array" = ""
+"result" = ""
+"str" = ""
+"file" = ""
