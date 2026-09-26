@@ -199,7 +199,7 @@ end
 
 #pub fn buf_writer_create(f: fd): buf_writer
 
-#pub fun buf_write
+#pub fn buf_write
   {lb:agz}{n:pos}
   (w: !buf_writer, data: !$A.borrow(byte, lb, n), len: int n): $R.result(int, int)
 
@@ -529,6 +529,26 @@ fun _copy_in {ld,ls:agz}{n:pos}{p,c:nat | p + c <= BUF_SIZE; c <= n}{k:nat | k <
     val () = $A.set<byte>(dst, p + k, $A.read<byte>(src, k))
   in _copy_in(dst, src, p, k + 1, c) end
 
+(* After a flush: buffer the data if it now fits, otherwise (it is larger
+   than the buffer) write it straight to the file. No recursion. *)
+fn _buf_write_flushed {lb:agz}{n:pos}
+  (w: !buf_writer, data: !$A.borrow(byte, lb, n), len: int n): $R.result(int, int) = let
+  val+ @buf_writer_mk(f, buf, pos) = w
+in
+  if pos + len <= 4096 then let
+    val () = _copy_in(buf, data, pos, 0, len)
+    val () = pos := pos + len
+    val full = (pos >= 4096)
+    prval () = fold@(w)
+  in
+    if full then _buf_do_flush(w) else $R.ok(len)
+  end
+  else let
+    val r = file_write(f, data, len)
+    prval () = fold@(w)
+  in r end
+end
+
 implement buf_write {lb}{n} (w, data, len) = let
   val+ @buf_writer_mk(f, buf, pos) = w
 in
@@ -545,7 +565,7 @@ in
     val r = _buf_do_flush(w)
   in
     case+ r of
-    | ~$R.ok(_) => buf_write(w, data, len)
+    | ~$R.ok(_) => _buf_write_flushed(w, data, len)
     | ~$R.err(e) => $R.err(e)
   end
 end
