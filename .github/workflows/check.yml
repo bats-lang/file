@@ -48,6 +48,7 @@ jobs:
 
       - name: Dynamic tests
         run: |
+          sudo apt-get install -y valgrind
           export PATH=~/bats-bin:$PATH
           tests/dynamic/run.sh ~/repository
 
