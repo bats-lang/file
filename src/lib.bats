@@ -232,8 +232,8 @@ end
 (* Bytes read into buf[0, k), at most len (read(2)'s contract), or
    the errno (> 0) of a read that failed before any byte. *)
 #pub fn file_read
-  {l:agz}{n:pos}
-  (f: !fd, buf: !$A.arr(byte, l, n), len: int n): $R.result([k:nat | k <= n] int k, int)
+  {l:agz}{n:pos}{o:addr}
+  (f: !fd, buf: !$A.arrx(byte, l, n, o), len: int n): $R.result([k:nat | k <= n] int k, int)
 
 (* Writes all n bytes of buf, retrying short writes (as Rust's
    write_all), or fails with the errno (> 0) of the write that failed. *)
@@ -393,7 +393,7 @@ in
   else $R.err(~rawfd)
 end
 
-implement file_read {l}{n} (f, buf, len) = let
+implement file_read {l}{n}{o} (f, buf, len) = let
   val+ @fd_mk(rawfd) = f
   val r = $UNSAFE begin $extfcall([k:int | k <= n] int k, "_file_read", rawfd,
     $UNSAFE.castvwtp1{ptr}(buf), len) end
