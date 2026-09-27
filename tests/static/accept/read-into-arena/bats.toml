@@ -1,0 +1,8 @@
+[package]
+name = "read-into-arena"
+kind = "lib"
+
+[dependencies]
+"array" = ""
+"file" = ""
+"result" = ""
