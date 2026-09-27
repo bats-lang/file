@@ -1,5 +1,5 @@
 [package]
-name = "dir-name-last"
+name = "dir-name-end"
 kind = "lib"
 
 [dependencies]
