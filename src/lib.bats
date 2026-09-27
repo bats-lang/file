@@ -338,9 +338,10 @@ end
    Buffered writer
    ============================================================ *)
 
-(* pos <= BUF_SIZE bytes are pending. *)
+(* pos < BUF_SIZE bytes are pending: a write that fills the buffer
+   writes it out. *)
 #pub datavtype buf_writer =
-  | {lb:agz}{p:nat | p <= BUF_SIZE}
+  | {lb:agz}{p:nat | p < BUF_SIZE}
     buf_writer_mk of (fd, $A.arr(byte, lb, BUF_SIZE), int p)
 
 #pub fn buf_writer_create(f: fd): buf_writer
@@ -702,6 +703,20 @@ implement buf_writer_create(f) = let
   val buf = $A.alloc<byte>(4096)
 in buf_writer_mk(f, buf, 0) end
 
+(* buf[0, c) written to f: the count, or the errno *)
+fn _write_prefix {lb:agz}{c:pos | c <= BUF_SIZE}
+  (f: !fd, buf: $A.arr(byte, lb, BUF_SIZE), c: int c)
+  : @($A.arr(byte, lb, BUF_SIZE), $R.result(int, int)) = let
+  val @(fz, bv) = $A.freeze<byte>(buf)
+  val+ @fd_mk(rawfd) = f
+  val written = $UNSAFE begin $extfcall(int, "_file_write", rawfd,
+    $UNSAFE.castvwtp1{ptr}(bv), c) end
+  prval () = fold@(f)
+  val () = $A.drop<byte>(fz, bv)
+in
+  @($A.thaw<byte>(fz), (if written >= 0 then $R.ok(written) else $R.err(~written)): $R.result(int, int))
+end
+
 fn _buf_do_flush(w: !buf_writer): $R.result(int, int) = let
   val+ @buf_writer_mk(f, buf, pos) = w
 in
@@ -709,20 +724,11 @@ in
     prval () = fold@(w)
   in $R.ok(0) end
   else let
-    val @(fz, bv) = $A.freeze<byte>(buf)
-    val+ @fd_mk(rawfd) = f
-    val written = $UNSAFE begin $extfcall(int, "_file_write", rawfd,
-      $UNSAFE.castvwtp1{ptr}(bv), pos) end
-    prval () = fold@(f)
-    val () = $A.drop<byte>(fz, bv)
-    val buf2 = $A.thaw<byte>(fz)
+    val @(buf2, r) = _write_prefix(f, buf, pos)
     val () = buf := buf2
     val () = pos := 0
     prval () = fold@(w)
-  in
-    if written >= 0 then $R.ok(written)
-    else $R.err(~written)
-  end
+  in r end
 end
 
 implement buf_flush(w) = _buf_do_flush(w)
@@ -731,23 +737,19 @@ implement buf_flush(w) = _buf_do_flush(w)
    low 8 bits of b, as before, now without a cast. *)
 implement buf_write_byte(w, b) = let
   val+ @buf_writer_mk(f, buf, pos) = w
+  val () = $A.set<byte>(buf, pos, $A.int2byte($AR.low_byte(b)))
+  val np = pos + 1
 in
-  if pos < 4096 then let
-    val () = $A.set<byte>(buf, pos, $A.int2byte($AR.low_byte(b)))
-    val () = pos := pos + 1
-    val full = (pos >= 4096)
+  if np < 4096 then let
+    val () = pos := np
     prval () = fold@(w)
-  in
-    if full then _buf_do_flush(w) else $R.ok(1)
-  end
+  in $R.ok(1) end
   else let
+    val @(buf2, r) = _write_prefix(f, buf, np)
+    val () = buf := buf2
+    val () = pos := 0
     prval () = fold@(w)
-    val r = _buf_do_flush(w)
-  in
-    case+ r of
-    | ~$R.ok(_) => buf_write_byte(w, b)
-    | ~$R.err(e) => $R.err(e)
-  end
+  in r end
 end
 
 (* buf[p..p+c) := src[0..c). *)
@@ -765,14 +767,18 @@ fn _buf_write_flushed {lb:agz}{n:pos}
   (w: !buf_writer, data: !$A.borrow(byte, lb, n), len: int n): $R.result(int, int) = let
   val+ @buf_writer_mk(f, buf, pos) = w
 in
-  if pos + len <= 4096 then let
+  if pos + len < 4096 then let
     val () = _copy_in(buf, data, pos, 0, len)
     val () = pos := pos + len
-    val full = (pos >= 4096)
     prval () = fold@(w)
-  in
-    if full then _buf_do_flush(w) else $R.ok(len)
-  end
+  in $R.ok(len) end
+  else if pos + len = 4096 then let
+    val () = _copy_in(buf, data, pos, 0, len)
+    val @(buf2, r) = _write_prefix(f, buf, 4096)
+    val () = buf := buf2
+    val () = pos := 0
+    prval () = fold@(w)
+  in r end
   else let
     val r = file_write(f, data, len)
     prval () = fold@(w)
@@ -786,14 +792,18 @@ end
 implement buf_write {lb}{n} (w, data, len) = let
   val+ @buf_writer_mk(f, buf, pos) = w
 in
-  if pos + len <= 4096 then let
+  if pos + len < 4096 then let
     val () = _copy_in(buf, data, pos, 0, len)
     val () = pos := pos + len
-    val full = (pos >= 4096)
     prval () = fold@(w)
-  in
-    if full then _buf_do_flush(w) else $R.ok(len)
-  end
+  in $R.ok(len) end
+  else if pos + len = 4096 then let
+    val () = _copy_in(buf, data, pos, 0, len)
+    val @(buf2, r) = _write_prefix(f, buf, 4096)
+    val () = buf := buf2
+    val () = pos := 0
+    prval () = fold@(w)
+  in r end
   else let
     prval () = fold@(w)
     val r = _buf_do_flush(w)
