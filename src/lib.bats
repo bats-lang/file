@@ -23,6 +23,7 @@ $UNSAFE begin
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <limits.h>
 
 /* flags are file's own values (the O_* stadefs below); the host's
    O_* bits differ between systems (O_CREAT is 64 on Linux, 512 on
@@ -104,6 +105,9 @@ static int _file_entry_cmp(const void *x, const void *y) {
   if (c != 0) return c;
   return a->len - b->len;
 }
+static void _file_entries_free(void *p);
+/* Null when the directory cannot be opened or read, or when memory for
+   its entries cannot be had; everything allocated so far is freed. */
 static void *_file_dir_read(const char *path) {
   DIR *d = opendir(path);
   _file_entries_t *r;
@@ -111,23 +115,41 @@ static void *_file_dir_read(const char *path) {
   int cap = 16;
   if (!d) return (void *)0;
   r = (_file_entries_t *)malloc(sizeof(_file_entries_t));
+  if (!r) { closedir(d); return (void *)0; }
   r->n = 0;
-  r->es = (_file_entry_t *)malloc(cap * sizeof(_file_entry_t));
-  while ((e = readdir(d)) != 0) {
-    int len = (int)strlen(e->d_name);
-    char *s = (char *)malloc(len > 0 ? len : 1);
+  r->es = (_file_entry_t *)malloc((size_t)cap * sizeof(_file_entry_t));
+  if (!r->es) { free(r); closedir(d); return (void *)0; }
+  for (;;) {
+    int len;
+    char *s;
+    errno = 0;
+    e = readdir(d);
+    if (!e) break;
     if (r->n == cap) {
+      _file_entry_t *es;
+      if ((size_t)cap > ((size_t)INT_MAX / 2) / sizeof(_file_entry_t)) goto fail;
+      es = (_file_entry_t *)realloc(r->es, 2 * (size_t)cap * sizeof(_file_entry_t));
+      if (!es) goto fail;
+      r->es = es;
       cap = 2 * cap;
-      r->es = (_file_entry_t *)realloc(r->es, cap * sizeof(_file_entry_t));
     }
-    memcpy(s, e->d_name, len);
+    len = (int)strlen(e->d_name);
+    s = (char *)malloc(len > 0 ? (size_t)len : 1);
+    if (!s) goto fail;
+    memcpy(s, e->d_name, (size_t)len);
     r->es[r->n].name = s;
     r->es[r->n].len = len;
     r->n++;
   }
+  /* readdir returns null at the end and on an error, which sets errno. */
+  if (errno != 0) goto fail;
   closedir(d);
-  qsort(r->es, r->n, sizeof(_file_entry_t), _file_entry_cmp);
+  qsort(r->es, (size_t)r->n, sizeof(_file_entry_t), _file_entry_cmp);
   return (void *)r;
+fail:
+  closedir(d);
+  _file_entries_free(r);
+  return (void *)0;
 }
 static int _file_entries_count(void *p) {
   return ((_file_entries_t *)p)->n;
@@ -268,7 +290,8 @@ end
 #pub fn dir_close(d: dir): $R.result(int, int)
 
 (* Every entry of the directory at path (including . and ..), sorted by
-   name. *)
+   name; err when the directory cannot be opened or read, or when memory
+   for its entries cannot be had. *)
 #pub fn dir_read
   {lb:agz}{n:pos | n < 1048576}
   (path: !$A.borrow(byte, lb, n), path_len: int n): $R.result([k:nat] entries(k), int)
