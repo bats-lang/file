@@ -54,16 +54,36 @@ static int _file_read(int fd, void *buf, int len) {
   }
   return total;
 }
+/* Writes all len bytes (as Rust's write_all): len, or -errno of the
+   write that failed. EINTR is retried. */
 static int _file_write(int fd, const void *buf, int len) {
-  return (int)write(fd, buf, (unsigned int)len);
+  int total = 0;
+  while (total < len) {
+    int n = (int)write(fd, (const char *)buf + total, (unsigned int)(len - total));
+    if (n < 0 && errno == EINTR) continue;
+    if (n < 0) return -errno;
+    if (n == 0) return -EIO;
+    total += n;
+  }
+  return total;
 }
 static int _file_close(int fd) {
   return close(fd);
 }
+/* A size that does not fit an int is EFBIG, not a truncated value. */
+static int _file_size_of(const struct stat *st) {
+  if (st->st_size < 0 || st->st_size > 2147483647) return -EFBIG;
+  return (int)st->st_size;
+}
 static int _file_stat_size(const char *path) {
   struct stat st;
-  if (stat(path, &st) != 0) return -1;
-  return (int)st.st_size;
+  if (stat(path, &st) != 0) return -errno;
+  return _file_size_of(&st);
+}
+static int _file_fd_size(int fd) {
+  struct stat st;
+  if (fstat(fd, &st) != 0) return -errno;
+  return _file_size_of(&st);
 }
 static void *_file_opendir(const char *path) {
   return (void *)opendir(path);
@@ -209,15 +229,27 @@ end
   {l:agz}{n:pos}
   (f: !fd, buf: !$A.arr(byte, l, n), len: int n): $R.result([k:nat | k <= n] int k, int)
 
+(* Writes all n bytes of buf, retrying short writes (as Rust's
+   write_all), or fails with the errno (> 0) of the write that failed. *)
 #pub fn file_write
   {lb:agz}{n:pos}
-  (f: !fd, buf: !$A.borrow(byte, lb, n), len: int n): $R.result(int, int)
+  (f: !fd, buf: !$A.borrow(byte, lb, n), len: int n): $R.result(int n, int)
 
 #pub fn file_close(f: fd): $R.result(int, int)
 
+(* Size in bytes of the file at path, or the errno (> 0): EFBIG for a
+   size that does not fit an int. *)
 #pub fn file_size
   {lb:agz}{n:pos | n < 1048576}
-  (path: !$A.borrow(byte, lb, n), path_len: int n): $R.result(int, int)
+  (path: !$A.borrow(byte, lb, n), path_len: int n): $R.result([s:nat] int s, int)
+
+(* Size in bytes of the open file f, as file_size *)
+#pub fn fd_size(f: !fd): $R.result([s:nat] int s, int)
+
+(* Copies the bytes of src, from its position to the size it has when
+   the copy starts (fd_size), to dst; the number copied (less when src
+   ends early), or the errno (> 0) of a failed read or write. *)
+#pub fn fd_copy(src: !fd, dst: !fd): $R.result([c:nat] int c, int)
 
 (* ============================================================
    Directory operations
@@ -361,12 +393,13 @@ end
 
 implement file_write {lb}{n} (f, buf, len) = let
   val+ @fd_mk(rawfd) = f
-  val r = $UNSAFE begin $extfcall(int, "_file_write", rawfd,
+  (* _file_write returns len or -errno *)
+  val r = $UNSAFE begin $extfcall([k:int | k == n || k < 0] int k, "_file_write", rawfd,
     $UNSAFE.castvwtp1{ptr}(buf), len) end
   prval () = fold@(f)
 in
   if r >= 0 then $R.ok(r)
-  else $R.err(r)
+  else $R.err(~r)
 end
 
 implement file_close(f) = let
@@ -379,12 +412,56 @@ end
 
 implement file_size {lb}{n} (path, path_len) = let
   val cpath = _with_cpath(path, path_len)
-  val sz = $UNSAFE begin $extfcall(int, "_file_stat_size",
+  val sz = $UNSAFE begin $extfcall([s:int] int s, "_file_stat_size",
     $UNSAFE.castvwtp1{ptr}(cpath)) end
   val () = $A.free<byte>(cpath)
 in
   if sz >= 0 then $R.ok(sz)
-  else $R.err(~1)
+  else $R.err(~sz)
+end
+
+implement fd_size(f) = let
+  val+ @fd_mk(rawfd) = f
+  val sz = $UNSAFE begin $extfcall([s:int] int s, "_file_fd_size", rawfd) end
+  prval () = fold@(f)
+in
+  if sz >= 0 then $R.ok(sz)
+  else $R.err(~sz)
+end
+
+(* 64 KiB at a time, until r bytes remain to copy. A chunk read past the
+   size (the file grew) is copied only up to it; a read of 0 bytes is
+   the end of src. *)
+implement fd_copy(src, dst) = let
+  fun loop {l:agz}{r,c:nat} .<r>.
+    (src: !fd, dst: !fd, buf: $A.arr(byte, l, 65536), r: int r, c: int c)
+    : @($R.result([c:nat] int c, int), $A.arr(byte, l, 65536)) =
+    if r <= 0 then @($R.ok(c), buf)
+    else (case+ file_read(src, buf, 65536) of
+      | ~$R.err(e) => @($R.err(e), buf)
+      | ~$R.ok(k) => let
+          val k = (if k > r then r else k): [k2:nat | k2 <= r; k2 <= 65536] int k2
+        in
+          if k <= 0 then @($R.ok(c), buf)
+          else let
+            val @(fz, bv) = $A.freeze<byte>(buf)
+            val @(left, right) = $A.borrow_split<byte>(fz, bv, k)
+            val w = file_write(dst, left, k)
+            val () = $A.drop<byte>(fz, $A.borrow_join<byte>(fz, left, right))
+            val buf = $A.thaw<byte>(fz)
+          in
+            case+ w of
+            | ~$R.ok(_) => loop(src, dst, buf, r - k, c + k)
+            | ~$R.err(e) => @($R.err(e), buf)
+          end
+        end)
+in
+  case+ fd_size(src) of
+  | ~$R.err(e) => $R.err(e)
+  | ~$R.ok(s) => let
+      val @(res, buf) = loop(src, dst, $A.alloc<byte>(65536), s, 0)
+      val () = $A.free<byte>(buf)
+    in res end
 end
 
 (* ============================================================
@@ -644,7 +721,7 @@ in
     prval () = fold@(w)
   in
     if written >= 0 then $R.ok(written)
-    else $R.err(written)
+    else $R.err(~written)
   end
 end
 
@@ -699,7 +776,11 @@ in
   else let
     val r = file_write(f, data, len)
     prval () = fold@(w)
-  in r end
+  in
+    case+ r of
+    | ~$R.ok(k) => $R.ok(k)
+    | ~$R.err(e) => $R.err(e)
+  end
 end
 
 implement buf_write {lb}{n} (w, data, len) = let

@@ -1,0 +1,10 @@
+[package]
+name = "copy"
+kind = "bin"
+
+[dependencies]
+"arith" = ""
+"array" = ""
+"result" = ""
+"str" = ""
+"file" = ""
