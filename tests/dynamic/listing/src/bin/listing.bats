@@ -12,9 +12,9 @@
 
 (* Prints entry i's name *)
 fn show {n:int}{i:nat | i < n}{l:agz}
-  (es: !$F.entries(n), i: int i, buf: !$A.arr(byte, l, 64)): void = let
-  val k = $F.entries_name(es, i, buf, 64)
-  fun put {j,m:nat | j <= m; m <= 64} .<m - j>. (buf: !$A.arr(byte, l, 64), j: int j, k: int m): void =
+  (es: !$F.entries(n), i: int i, buf: !$A.arr(byte, l, 1024)): void = let
+  val k = $F.entries_name(es, i, buf, 1024)
+  fun put {j,m:nat | j <= m; m <= 1024} .<m - j>. (buf: !$A.arr(byte, l, 1024), j: int j, k: int m): void =
     if j >= k then () else let
       val () = print_char(int2char0(byte2int0($A.get<byte>(buf, j))))
     in put(buf, j + 1, k) end
@@ -47,7 +47,7 @@ fun make {i:nat | i <= 999} .<i>.
 
 (* Prints entries 0, 1, 2 and 301 *)
 fn show_ends {n:int}{l:agz}
-  (es: !$F.entries(n), n: int n, buf: !$A.arr(byte, l, 64)): void =
+  (es: !$F.entries(n), n: int n, buf: !$A.arr(byte, l, 1024)): void =
   if n > 301 then let
     val () = show(es, 0, buf)
     val () = show(es, 1, buf)
@@ -57,10 +57,10 @@ fn show_ends {n:int}{l:agz}
 
 (* Number of names of length 4 starting with f, and of other names *)
 fun tally {n,i:nat | i <= n}{l:agz} .<n - i>.
-  (es: !$F.entries(n), i: int i, n: int n, buf: !$A.arr(byte, l, 64), fs: int, others: int): @(int, int) =
+  (es: !$F.entries(n), i: int i, n: int n, buf: !$A.arr(byte, l, 1024), fs: int, others: int): @(int, int) =
   if i >= n then @(fs, others)
   else let
-    val k = $F.entries_name(es, i, buf, 64)
+    val k = $F.entries_name(es, i, buf, 1024)
     val f = (if k = 4 then byte2int0($A.get<byte>(buf, 0)) = 102 else false): bool
   in
     if f then tally(es, i + 1, n, buf, fs + 1, others)
@@ -75,7 +75,7 @@ implement main0 () = let
   val () = (case+ $F.dir_read(bd, 5) of
     | ~$R.ok(es) => let
         val n = $F.entries_count(es)
-        val buf = $A.alloc<byte>(64)
+        val buf = $A.alloc<byte>(1024)
         val @(fs, others) = tally(es, 0, n, buf, 0, 0)
         val () = show_ends(es, n, buf)
         val () = $A.free<byte>(buf)

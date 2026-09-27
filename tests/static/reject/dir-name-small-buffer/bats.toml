@@ -1,0 +1,8 @@
+[package]
+name = "dir-name-small-buffer"
+kind = "lib"
+
+[dependencies]
+"array" = ""
+"file" = ""
+"result" = ""
