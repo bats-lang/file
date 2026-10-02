@@ -1,0 +1,8 @@
+[package]
+name = "error-as-int"
+kind = "lib"
+
+[dependencies]
+"array" = ""
+"file" = ""
+"result" = ""
