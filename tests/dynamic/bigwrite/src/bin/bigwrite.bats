@@ -29,12 +29,12 @@ implement main0 () = let
   val big = $A.alloc<byte>(5000)
   val () = fill(big, 0)
   val @(fb, bb) = $A.freeze<byte>(big)
-  val wrote = (case+ $F.file_open(bp, 23, 577, 420) of
+  val wrote = (case+ $F.file_open(bp, 23, $F.WriteOnly(), $F.CreateOrTruncate(), 420) of
     | ~$R.ok(fd) => let
         val w = $F.buf_writer_create(fd)
-        val () = $R.discard<int><int>($F.buf_write_byte(w, 7))
+        val () = $R.discard<int><$F.io_error>($F.buf_write_byte(w, 7))
         val ok = (case+ $F.buf_write(w, bb, 5000) of | ~$R.ok(_) => true | ~$R.err(_) => false): bool
-        val () = $R.discard<int><int>($F.buf_writer_close(w))
+        val () = $R.discard<int><$F.io_error>($F.buf_writer_close(w))
       in ok end
     | ~$R.err(_) => false): bool
   val () = $A.drop<byte>(fb, bb)
@@ -43,13 +43,13 @@ implement main0 () = let
   fun expect {i:nat | i <= 5000} .<5000 - i>. (i: int i, s: int): int =
     if i >= 5000 then s else expect(i + 1, s + $AR.low_byte(i))
   val want = expect(0, 7)
-  val @(sum, cnt) = (case+ $F.file_open(bp, 23, 0, 0) of
+  val @(sum, cnt) = (case+ $F.file_open(bp, 23, $F.ReadOnly(), $F.OpenExisting(), 0) of
     | ~$R.ok(fd) => let
         val r = $F.buf_reader_create(fd)
         val buf = $A.alloc<byte>(4096)
         val res = drain(r, buf, 10, 0, 0)
         val () = $A.free<byte>(buf)
-        val () = $R.discard<int><int>($F.buf_reader_close(r))
+        val () = $R.discard<int><$F.io_error>($F.buf_reader_close(r))
       in res end
     | ~$R.err(_) => @(~1, ~1)): @(int, int)
   val () = $A.drop<byte>(fp, bp)

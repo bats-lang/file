@@ -29,24 +29,24 @@ implement main0 () = let
   var p = @[char][24]('/', 't', 'm', 'p', '/', 'b', 'a', 't', 's', '_', 'f', 'i', 'l', 'e', '_', 't', 'e', 's', 't', '.', 't', 'x', 't', '\000')
   val @(fp, bp) = $A.freeze<byte>($S.from_char_array(p, 24))
   (* write *)
-  val w_ok = (case+ $F.file_open(bp, 24, 577, 420) of
+  val w_ok = (case+ $F.file_open(bp, 24, $F.WriteOnly(), $F.CreateOrTruncate(), 420) of
     | ~$R.ok(fd) => let
         val w = $F.buf_writer_create(fd)
-        val () = $R.discard<int><int>($F.buf_write_byte(w, 97))
-        val () = $R.discard<int><int>($F.buf_write_byte(w, 98 + 256)   (* low byte: 'b' *))
-        val () = $R.discard<int><int>($F.buf_write_byte(w, 10))
+        val () = $R.discard<int><$F.io_error>($F.buf_write_byte(w, 97))
+        val () = $R.discard<int><$F.io_error>($F.buf_write_byte(w, 98 + 256)   (* low byte: 'b' *))
+        val () = $R.discard<int><$F.io_error>($F.buf_write_byte(w, 10))
         var blk = @[char][6]('c', 'd', '\n', 'x', 'y', 'z')
         val @(fb, bb) = $A.freeze<byte>($S.from_char_array(blk, 6))
-        val () = $R.discard<int><int>($F.buf_write(w, bb, 6))
+        val () = $R.discard<int><$F.io_error>($F.buf_write(w, bb, 6))
         val () = $A.drop<byte>(fb, bb)
         val () = $A.free<byte>($A.thaw<byte>(fb))
         val c = $F.buf_writer_close(w)
-        val () = $R.discard<int><int>(c)
+        val () = $R.discard<int><$F.io_error>(c)
       in true end
     | ~$R.err(_) => false): bool
   val r0 = check("open for write", w_ok)
   (* read back *)
-  val r_ok = (case+ $F.file_open(bp, 24, 0, 0) of
+  val r_ok = (case+ $F.file_open(bp, 24, $F.ReadOnly(), $F.OpenExisting(), 0) of
     | ~$R.ok(fd) => let
         val r = $F.buf_reader_create(fd)
         val buf = $A.alloc<byte>(8)
@@ -60,11 +60,11 @@ implement main0 () = let
           | ~$R.some(_) => false | ~$R.none() => true))
         val () = $A.free<byte>(buf)
         val c = $F.buf_reader_close(r)
-        val () = $R.discard<int><int>(c)
+        val () = $R.discard<int><$F.io_error>(c)
       in a1 && a2 && a3 && a4 end
     | ~$R.err(_) => check("open for read", false)): bool
   (* buf_read in two chunks *)
-  val c_ok = (case+ $F.file_open(bp, 24, 0, 0) of
+  val c_ok = (case+ $F.file_open(bp, 24, $F.ReadOnly(), $F.OpenExisting(), 0) of
     | ~$R.ok(fd) => let
         val r = $F.buf_reader_create(fd)
         val buf = $A.alloc<byte>(4)
@@ -74,7 +74,7 @@ implement main0 () = let
         val b2 = check("read next 4", line_is(buf, $F.buf_read(r, buf, 4), dnxy, 4))
         val () = $A.free<byte>(buf)
         val c = $F.buf_reader_close(r)
-        val () = $R.discard<int><int>(c)
+        val () = $R.discard<int><$F.io_error>(c)
       in b1 && b2 end
     | ~$R.err(_) => check("open for chunked read", false)): bool
   val () = $A.drop<byte>(fp, bp)

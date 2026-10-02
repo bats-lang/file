@@ -1,0 +1,8 @@
+[package]
+name = "open-choices"
+kind = "lib"
+
+[dependencies]
+"array" = ""
+"file" = ""
+"result" = ""

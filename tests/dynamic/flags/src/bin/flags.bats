@@ -4,18 +4,17 @@
 #use result as R
 #use str as S
 
-(* The flag values are file's own (see O_* in lib.bats), translated to
-   the host's open(2) flags; these cases check what each one does.
-   Writes n bytes of c to path opened with flags; true when all n
-   bytes were written. *)
+(* access and opening are translated to the host's open(2) flags; these
+   cases check what each does. Writes n bytes to path opened so; true
+   when all n bytes were written. *)
 fn put {lp:agz}{np:pos | np < 1048576}{n:pos | n <= 16}
-  (p: !$A.borrow(byte, lp, np), np: int np, flags: int, n: int n): bool = let
+  (p: !$A.borrow(byte, lp, np), np: int np, access: $F.access, opening: $F.opening, n: int n): bool = let
   val buf = $A.alloc<byte>(n)
   val @(fb, bb) = $A.freeze<byte>(buf)
-  val ok = (case+ $F.file_open(p, np, flags, 420) of
+  val ok = (case+ $F.file_open(p, np, access, opening, 420) of
     | ~$R.ok(fd) => let
         val w = (case+ $F.file_write(fd, bb, n) of | ~$R.ok(k) => k = n | ~$R.err(_) => false): bool
-        val () = $R.discard<int><int>($F.file_close(fd))
+        val () = $R.discard<int><$F.io_error>($F.file_close(fd))
       in w end
     | ~$R.err(_) => false): bool
   val () = $A.drop<byte>(fb, bb)
@@ -34,19 +33,17 @@ in ok end
 implement main0 () = let
   var c = @[char][20]('/', 't', 'm', 'p', '/', 'b', 'a', 't', 's', '_', 'f', 'l', 'a', 'g', 's', '.', 'b', 'i', 'n', '\000')
   val @(fp, bp) = $A.freeze<byte>($S.from_char_array(c, 20))
-  (* WRONLY | CREAT | TRUNC *)
-  val w1 = put(bp, 20, 1 + 64 + 512, 5)
+  val w1 = put(bp, 20, $F.WriteOnly(), $F.CreateOrTruncate(), 5)
   val r1 = check("create", size(bp, 20), 5)
-  val w2 = put(bp, 20, 1 + 64 + 512, 2)
+  val w2 = put(bp, 20, $F.WriteOnly(), $F.CreateOrTruncate(), 2)
   val r2 = check("truncate", size(bp, 20), 2)
-  (* WRONLY | APPEND *)
-  val w3 = put(bp, 20, 1 + 1024, 3)
+  val w3 = put(bp, 20, $F.WriteOnly(), $F.AppendExisting(), 3)
   val r3 = check("append", size(bp, 20), 5)
-  (* WRONLY without TRUNC overwrites in place *)
-  val w4 = put(bp, 20, 1, 1)
+  (* opened as it is, a write overwrites in place *)
+  val w4 = put(bp, 20, $F.WriteOnly(), $F.OpenExisting(), 1)
   val r4 = check("no truncate", size(bp, 20), 5)
-  (* RDONLY: the write fails *)
-  val w5 = put(bp, 20, 0, 1)
+  (* read-only: the write fails *)
+  val w5 = put(bp, 20, $F.ReadOnly(), $F.OpenExisting(), 1)
   val r5 = check("read-only write", (if w5 then 1 else 0), 0)
   val () = $A.drop<byte>(fp, bp)
   val () = $A.free<byte>($A.thaw<byte>(fp))
