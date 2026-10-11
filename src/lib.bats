@@ -24,6 +24,7 @@ $UNSAFE begin
 #include <string.h>
 #include <errno.h>
 #include <limits.h>
+#include <sys/file.h>
 
 /* file's own code for an errno (io_error's, decoded once by _io_error
    below): errno's numbers differ between systems (EAGAIN is 11 on Linux
@@ -268,6 +269,24 @@ static int _file_chmod(const char *path, int mode) {
 static int _file_mkdir(const char *path, int mode) {
   return mkdir(path, mode) == 0 ? 0 : _file_failed(errno);
 }
+/* flock(2) on fd: kind 0 shared, 1 exclusive; wait 0 waits until the
+   lock is free, 1 fails at once (EWOULDBLOCK) when another open file
+   holds a lock that conflicts. EINTR is retried. 0, or the failure. */
+static int _file_lock(int fd, int kind, int wait) {
+  int op = kind == 0 ? LOCK_SH : LOCK_EX;
+  if (wait != 0) op |= LOCK_NB;
+  while (flock(fd, op) != 0) {
+    if (errno != EINTR) return _file_failed(errno);
+  }
+  return 0;
+}
+/* Releases fd's flock(2) lock: 0, or the failure. */
+static int _file_unlock(int fd) {
+  while (flock(fd, LOCK_UN) != 0) {
+    if (errno != EINTR) return _file_failed(errno);
+  }
+  return 0;
+}
 #endif
 %}
 end
@@ -381,6 +400,36 @@ end
    the copy starts (fd_size), to dst; the number copied (less when src
    ends early), or why a read or write failed. *)
 #pub fn fd_copy(src: !fd, dst: !fd): $R.result([c:nat] int c, io_error)
+
+(* ============================================================
+   Advisory locks
+   ============================================================ *)
+
+(* A lock that others may share (readers), or one held alone *)
+#pub datatype lock_kind =
+  | LockShared
+  | LockExclusive
+
+(* Whether taking a lock that another holds waits until it is free, or
+   fails at once with WouldBlock *)
+#pub datatype lock_wait =
+  | LockWaits
+  | LockFailsAtOnce
+
+(* Takes an advisory lock (flock(2)) on the open file f, or says why it
+   could not: WouldBlock when kind conflicts with a lock another open
+   file holds on the same file and wait is LockFailsAtOnce. The lock
+   belongs to this open file: it conflicts with a lock taken through any
+   other open of the file, in this process or another, and it is
+   released by fd_unlock, by closing f, or when the process ends, however
+   it ends, so a process that dies holding it never leaves it held.
+   Taking it again on f converts it to kind; as flock(2) says, the
+   conversion is not atomic (another may take the lock in between, and
+   a conversion that fails may leave f holding none). *)
+#pub fn fd_lock(f: !fd, kind: lock_kind, wait: lock_wait): $R.result(int, io_error)
+
+(* Releases the lock f holds, if any *)
+#pub fn fd_unlock(f: !fd): $R.result(int, io_error)
 
 (* ============================================================
    Directory operations
@@ -638,6 +687,26 @@ implement fd_size(f) = let
 in
   if sz >= 0 then $R.ok(sz)
   else $R.err(_io_error(sz))
+end
+
+implement fd_lock(f, kind, wait) = let
+  val+ @fd_mk(rawfd) = f
+  val k = (case+ kind of LockShared() => 0 | LockExclusive() => 1): int
+  val w = (case+ wait of LockWaits() => 0 | LockFailsAtOnce() => 1): int
+  val r = $UNSAFE begin $extfcall(int, "_file_lock", rawfd, k, w) end
+  prval () = fold@(f)
+in
+  if r >= 0 then $R.ok(0)
+  else $R.err(_io_error(r))
+end
+
+implement fd_unlock(f) = let
+  val+ @fd_mk(rawfd) = f
+  val r = $UNSAFE begin $extfcall(int, "_file_unlock", rawfd) end
+  prval () = fold@(f)
+in
+  if r >= 0 then $R.ok(0)
+  else $R.err(_io_error(r))
 end
 
 (* 64 KiB at a time, until r bytes remain to copy. A chunk read past the

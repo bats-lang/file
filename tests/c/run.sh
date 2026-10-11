@@ -1,9 +1,9 @@
 #!/bin/sh
 # Compiles file's C runtime on its own (no bats, no ATS2) and checks
-# _file_dir_read when memory runs out: each of its allocations fails in
+# _file_dir_read when memory runs out (each of its allocations fails in
 # turn, and each time it must return null having freed everything it
-# allocated. It runs on every OS in CI, including ones where bats cannot
-# run yet.
+# allocated), and _file_lock's flock(2) on two opens of one file. It
+# runs on every OS in CI, including ones where bats cannot run yet.
 #
 # usage: tests/c/run.sh   (needs cc)
 set -eu
@@ -20,6 +20,7 @@ cat > "$TMP/main.c" <<'C'
 #include <string.h>
 #include <errno.h>
 #include <limits.h>
+#include <sys/file.h>
 #include <stdio.h>
 /* The runtime's allocations go through these: the fail_at-th one fails
    (counting from 0), and live counts the blocks not yet freed. */
@@ -73,6 +74,20 @@ int main(int argc, char **argv) {
   }
   printf("ok   c-dir-read\n");
   printf("ok   c-dir-oom (%d allocations failed in turn)\n", total);
+  /* flock(2): two opens of one file conflict, in one process too, and
+     a close releases the lock */
+  {
+    int a = _file_open(argv[3], 2, 1, 0644), b = _file_open(argv[3], 2, 1, 0644);
+    if (a < 0 || b < 0) { printf("FAIL c-lock: open\n"); return 1; }
+    if (_file_lock(a, 1, 1) != 0) { printf("FAIL c-lock: first exclusive\n"); return 1; }
+    if (_file_lock(b, 1, 1) != -17) { printf("FAIL c-lock: second exclusive did not say WouldBlock\n"); return 1; }
+    if (_file_lock(b, 0, 1) != -17) { printf("FAIL c-lock: shared against exclusive did not say WouldBlock\n"); return 1; }
+    _file_close(a);
+    if (_file_lock(b, 1, 1) != 0) { printf("FAIL c-lock: exclusive after close\n"); return 1; }
+    if (_file_unlock(b) != 0) { printf("FAIL c-lock: unlock\n"); return 1; }
+    _file_close(b);
+    printf("ok   c-lock\n");
+  }
   return 0;
 }
 C
@@ -81,4 +96,4 @@ mkdir "$TMP/d"
 i=0
 while [ $i -lt 40 ]; do : > "$TMP/d/f$i"; i=$((i + 1)); done
 # 40 files plus . and ..
-"$TMP/t" "$TMP/d" 42
+"$TMP/t" "$TMP/d" 42 "$TMP/lockfile"
