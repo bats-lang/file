@@ -13,6 +13,9 @@ File system operations for the [Bats](https://github.com/bats-lang) programming 
 - File metadata (`file_mtime`, `file_stat`)
 - Directory operations (`dir_open`, `dir_next`, `dir_close`)
 - Change directory (`file_chdir`)
+- Advisory locks (`fd_lock`, `fd_unlock`: flock(2), `LockShared |
+  LockExclusive`, `LockWaits | LockFailsAtOnce`), released when the
+  file is closed or the process ends
 - Short-read safe: `read()` loops until all bytes are read
 
 ## Usage
