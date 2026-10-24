@@ -30,29 +30,31 @@ fn old_text (r: $R.result(int, $F.io_error)): string =
   | ~$R.ok(_) => "ok"
   | ~$R.err(e) => $F.io_error_text(e)
 
-(* A writer on p opened with access; pending bytes: 1 or 0 *)
-fn open_writer {lp:agz}{np:pos | np < 1048576}
-  (p: !$A.borrow(byte, lp, np), np: int np, access: $F.access, pending: int): $F.buf_writer =
+(* A writer on p opened with access, pending bytes (1 or 0), closed with
+   the checked form or the old one; how the close ended *)
+fn close_text {lp:agz}{np:pos | np < 1048576}
+  (p: !$A.borrow(byte, lp, np), np: int np, access: $F.access, pending: int, checked: bool): string =
   case+ $F.file_open(p, np, access, $F.CreateOrOpen(), 420) of
   | ~$R.ok(fd) => let
       val w = $F.buf_writer_create(fd)
       val () = (if pending > 0 then $R.discard<int><$F.io_error>($F.buf_write_byte(w, 97)) else ())
-    in w end
-  | ~$R.err(_) => let
-      val () = println! ("FAIL open")
-    in exit(1) end
+    in
+      if checked then outcome_text($F.buf_writer_close_checked(w))
+      else old_text($F.buf_writer_close(w))
+    end
+  | ~$R.err(_) => "open failed"
 
 implement main0 () = let
   var p = @[char][24]('/', 't', 'm', 'p', '/', 'b', 'a', 't', 's', '_', 'f', 'i', 'l', 'e', '_', 'c', 'l', 'o', 's', 'e', '.', 't', '\000', '\000')
   val @(fp, bp) = $A.freeze<byte>($S.from_char_array(p, 24))
   (* healthy writer *)
-  val r1 = check("healthy, checked", outcome_text($F.buf_writer_close_checked(open_writer(bp, 24, $F.WriteOnly(), 1))), "closed")
-  val r2 = check("healthy, old", old_text($F.buf_writer_close(open_writer(bp, 24, $F.WriteOnly(), 1))), "ok")
+  val r1 = check("healthy, checked", close_text(bp, 24, $F.WriteOnly(), 1, true), "closed")
+  val r2 = check("healthy, old", close_text(bp, 24, $F.WriteOnly(), 1, false), "ok")
   (* the final write fails: read-only descriptor *)
-  val r3 = check("failed final write, checked", outcome_text($F.buf_writer_close_checked(open_writer(bp, 24, $F.ReadOnly(), 1))), "flush failed: bad descriptor")
-  val r4 = check("failed final write, old form still returns Ok", old_text($F.buf_writer_close(open_writer(bp, 24, $F.ReadOnly(), 1))), "ok")
+  val r3 = check("failed final write, checked", close_text(bp, 24, $F.ReadOnly(), 1, true), "flush failed: bad descriptor")
+  val r4 = check("failed final write, old form still returns Ok", close_text(bp, 24, $F.ReadOnly(), 1, false), "ok")
   (* nothing pending: no write, no failure *)
-  val r5 = check("nothing pending, checked", outcome_text($F.buf_writer_close_checked(open_writer(bp, 24, $F.ReadOnly(), 0))), "closed")
+  val r5 = check("nothing pending, checked", close_text(bp, 24, $F.ReadOnly(), 0, true), "closed")
   val () = $A.drop<byte>(fp, bp)
   val () = $A.free<byte>($A.thaw<byte>(fp))
 in
