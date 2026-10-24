@@ -1,0 +1,9 @@
+[package]
+name = "closeflush"
+kind = "bin"
+
+[dependencies]
+"array" = ""
+"result" = ""
+"str" = ""
+"file" = ""

@@ -542,7 +542,18 @@ end
 
 #pub fn buf_flush(w: !buf_writer): $R.result(int, io_error)
 
+(* Deprecated, buffered-writer close (#61): drops the flush error; removed by #74 *)
 #pub fn buf_writer_close(w: buf_writer): $R.result(int, io_error)
+
+(* How a close ended, flush and close each answered (#61): the writer is
+   closed in every case, and each failure is its own constructor. *)
+#pub datavtype close_outcome =
+  | Closed                                         (* flushed and closed *)
+  | FlushFailed of (io_error)                      (* final write failed, closed *)
+  | CloseFailed of (io_error)                      (* flushed, close failed *)
+  | FlushAndCloseFailed of (io_error, io_error)    (* flush's, then close's *)
+
+#pub fn buf_writer_close_checked(w: buf_writer): close_outcome
 
 (* ============================================================
    Internal helpers
@@ -1095,9 +1106,32 @@ in
   end
 end
 
-implement buf_writer_close(w) = let
+(* Flush, then close: the flush's answer and the close's, both kept *)
+fn _buf_close_both(w: buf_writer)
+  : @($R.result(int, io_error), $R.result(int, io_error)) = let
   val flush_r = _buf_do_flush(w)
-  val () = $R.discard<int><io_error>(flush_r)
   val+ ~buf_writer_mk(f, buf, _) = w
   val () = $A.free<byte>(buf)
-in file_close(f) end
+  val close_r = file_close(f)
+in @(flush_r, close_r) end
+
+(* buffered-writer close (#61): the flush's answer is dropped, as published *)
+implement buf_writer_close(w) = let
+  val @(flush_r, close_r) = _buf_close_both(w)
+  val () = $R.discard<int><io_error>(flush_r)
+in close_r end
+
+implement buf_writer_close_checked(w) = let
+  val @(flush_r, close_r) = _buf_close_both(w)
+in
+  case+ flush_r of
+  | ~$R.ok(_) =>
+    (case+ close_r of
+     | ~$R.ok(_) => Closed()
+     | ~$R.err(c) => CloseFailed(c))
+  | ~$R.err(fe) =>
+    (case+ close_r of
+     | ~$R.ok(_) => FlushFailed(fe)
+     | ~$R.err(c) => FlushAndCloseFailed(fe, c))
+end
+
