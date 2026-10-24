@@ -28,3 +28,15 @@ that would move instead of moving it: move it in a pull request of its
 own. A pull request that needs newer packages runs `bats lock
 --repository <dir>` and commits `bats.lock` (and
 `.github/repository-version`) with the change.
+
+## Buffered-writer close (#61)
+
+`buf_writer_close` flushes and closes but returns only the close's answer: a
+failed final write is reported as success. It is kept as published, deprecated
+(removal: #74), and `buf_writer_close_checked` is beside it: it returns a
+`close_outcome` (`Closed`, `FlushFailed(e)`, `CloseFailed(e)`,
+`FlushAndCloseFailed(flush_e, close_e)`), a linear type, so a caller must match
+it with `case+`. The writer is closed in every case. `tests/dynamic/closeflush`
+fails the final write with a read-only descriptor (`BadDescriptor`) and calls
+both forms; `tests/static/reject/close-outcome-flush-left-out` rejects a match
+without `FlushFailed`.
