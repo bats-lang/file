@@ -1,0 +1,8 @@
+[package]
+name = "content-use"
+kind = "lib"
+
+[dependencies]
+"array" = ""
+"file" = ""
+"result" = ""

@@ -1,0 +1,8 @@
+[package]
+name = "use-after-failed-write"
+kind = "lib"
+
+[dependencies]
+"array" = ""
+"file" = ""
+"result" = ""
