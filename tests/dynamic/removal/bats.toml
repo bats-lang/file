@@ -1,0 +1,10 @@
+[package]
+name = "removal"
+kind = "bin"
+
+[dependencies]
+"arith" = ""
+"array" = ""
+"result" = ""
+"str" = ""
+"file" = ""
