@@ -1,0 +1,8 @@
+[package]
+name = "use-after-failed-read"
+kind = "lib"
+
+[dependencies]
+"array" = ""
+"file" = ""
+"result" = ""

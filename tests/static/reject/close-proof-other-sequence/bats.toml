@@ -1,0 +1,8 @@
+[package]
+name = "close-proof-other-sequence"
+kind = "lib"
+
+[dependencies]
+"array" = ""
+"file" = ""
+"result" = ""

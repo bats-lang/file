@@ -134,6 +134,10 @@ static int _file_stat_size(const char *path) {
   if (stat(path, &st) != 0) return _file_failed(errno);
   return _file_size_of(&st);
 }
+/* The next read of fd is at offset off from the start */
+static int _file_seek(int fd, int off) {
+  return lseek(fd, (off_t)off, SEEK_SET) < 0 ? _file_failed(errno) : 0;
+}
 static int _file_fd_size(int fd) {
   struct stat st;
   if (fstat(fd, &st) != 0) return _file_failed(errno);
@@ -506,20 +510,25 @@ end
 (* filled bytes of the buffer are valid; pos <= filled is the next one
    to hand out. Both bounds are in the type, so no access is checked at
    runtime. *)
+(* Deprecated, content-io: content_reader is beside it; removed by #81 *)
 #pub datavtype buf_reader =
   | {lb:agz}{f,p:nat | p <= f; f <= BUF_SIZE}
     buf_reader_mk of (fd, $A.arr(byte, lb, BUF_SIZE), int f, int p)
 
+(* Deprecated, content-io: removed by #81 *)
 #pub fn buf_reader_create(f: fd): buf_reader
 
+(* Deprecated, content-io: removed by #81 *)
 #pub fun buf_read
   {l:agz}{n:pos}
   (r: !buf_reader, buf: !$A.arr(byte, l, n), len: int n): $R.option(int)
 
+(* Deprecated, content-io: removed by #81 *)
 #pub fun buf_read_line
   {l:agz}{n:pos}
   (r: !buf_reader, buf: !$A.arr(byte, l, n), max_len: int n): $R.option(int)
 
+(* Deprecated, content-io: removed by #81 *)
 #pub fn buf_reader_close(r: buf_reader): $R.result(int, io_error)
 
 (* ============================================================
@@ -528,18 +537,23 @@ end
 
 (* pos < BUF_SIZE bytes are pending: a write that fills the buffer
    writes it out. *)
+(* Deprecated, content-io: content_writer is beside it; removed by #80 *)
 #pub datavtype buf_writer =
   | {lb:agz}{p:nat | p < BUF_SIZE}
     buf_writer_mk of (fd, $A.arr(byte, lb, BUF_SIZE), int p)
 
+(* Deprecated, content-io: removed by #80 *)
 #pub fn buf_writer_create(f: fd): buf_writer
 
+(* Deprecated, content-io: removed by #80 *)
 #pub fn buf_write
   {lb:agz}{n:pos}
   (w: !buf_writer, data: !$A.borrow(byte, lb, n), len: int n): $R.result(int, io_error)
 
+(* Deprecated, content-io: removed by #80 *)
 #pub fn buf_write_byte(w: !buf_writer, b: int): $R.result(int, io_error)
 
+(* Deprecated, content-io: removed by #80 *)
 #pub fn buf_flush(w: !buf_writer): $R.result(int, io_error)
 
 (* Deprecated, buffered-writer close (#61): drops the flush error; removed by #74 *)
@@ -553,7 +567,140 @@ end
   | CloseFailed of (io_error)                      (* flushed, close failed *)
   | FlushAndCloseFailed of (io_error, io_error)    (* flush's, then close's *)
 
+(* Deprecated, content-io: removed by #80 *)
 #pub fn buf_writer_close_checked(w: buf_writer): close_outcome
+
+(* ============================================================
+   Content writer: the type holds the bytes written (keyword: content-io)
+   ============================================================ *)
+
+(* A file this writer made, whose bytes written so far are the cells
+   written. It is made empty (created, or emptied), so it indexes the empty
+   cells; a write extends the index by APPEND; a flush leaves it. Every call
+   that can fail consumes the writer (closed, nothing more is known): the
+   failure is its own constructor, with no proof. *)
+#pub absvtype content_writer(written: $A.cells)
+
+(* FILE_HOLDS(written): the file holds exactly the cells written, made only by
+   content_close; trusted: the file was made empty by content_create, only
+   this writer writes it, no write was short (a short write is retried or is
+   a failure) and the close succeeded (keyword: content-io) *)
+#pub absprop FILE_HOLDS(written: $A.cells)
+
+(* The file at path, created or emptied for writing, with mode as the
+   permission bits of a file it creates; its writer indexes no bytes. *)
+#pub fn content_create
+  {lb:agz}{n:pos | n < 1048576}
+  (path: !$A.borrow(byte, lb, n), path_len: int n, mode: int)
+  : $R.result(content_writer($A.cnil()), io_error)
+
+(* After a write of the cells chunk to the writer of the cells written: the
+   writer of both (APPEND), or why the write failed (the writer is closed) *)
+#pub datavtype content_write_outcome($A.cells, $A.cells) =
+  | {written,chunk,both:$A.cells}
+    content_wrote(written, chunk) of ($A.APPEND(written, chunk, both) | content_writer(both))
+  | {written,chunk:$A.cells}
+    content_write_failed(written, chunk) of (io_error)
+
+(* One byte, a value below the size of a byte *)
+#pub fn content_write_byte
+  {written:$A.cells}{b:nat | b < 256}
+  (cw: content_writer(written), b: int b)
+  : content_write_outcome(written, $A.ccons(b, $A.cnil()))
+
+(* The whole run, whose cells are run_cells *)
+#pub fn content_write
+  {written:$A.cells}{l:agz}{n:pos}{k:pos}{run_cells:$A.cells}
+  (cw: content_writer(written), fz: !$A.cfrozen(l, n, k, run_cells),
+   run: !$A.cborrow(l, n, run_cells), len: int n)
+  : content_write_outcome(written, run_cells)
+
+(* The first bytes of the run, as many as the cells of chunk, which its cells begin with *)
+#pub fn content_write_prefix
+  {written:$A.cells}{l:agz}{n:pos}{k:pos}{run_cells,chunk:$A.cells}{m:pos | m <= n}
+  (holds: $A.HOLDS(run_cells, chunk), size: $A.CLEN(chunk, m) |
+   cw: content_writer(written), fz: !$A.cfrozen(l, n, k, run_cells),
+   run: !$A.cborrow(l, n, run_cells), count: int m)
+  : content_write_outcome(written, chunk)
+
+(* After a flush: the writer, its index unchanged, or why it failed (closed) *)
+#pub datavtype content_flush_outcome($A.cells) =
+  | {written:$A.cells} content_flushed(written) of (content_writer(written))
+  | {written:$A.cells} content_flush_failed(written) of (io_error)
+
+#pub fn content_flush {written:$A.cells} (cw: content_writer(written))
+  : content_flush_outcome(written)
+
+(* After a close: the proof that the file holds the cells written (with the
+   zero that file_close answers), or why the flush or the close failed (the
+   first that failed; no proof) *)
+#pub datavtype content_close_outcome($A.cells) =
+  | {written:$A.cells} content_closed(written) of (FILE_HOLDS(written) | int)
+  | {written:$A.cells} content_close_failed(written) of (io_error)
+
+#pub fn content_close {written:$A.cells} (cw: content_writer(written))
+  : content_close_outcome(written)
+
+(* ============================================================
+   Content reader: the type holds the bytes consumed (keyword: content-io)
+   ============================================================ *)
+
+(* A file opened for reading at the offset start, at most limit bytes of it
+   to be read; the bytes consumed so far are the cells consumed. It indexes
+   the empty cells. Every call that can fail or end consumes the reader. *)
+#pub absvtype content_reader(consumed: $A.cells, start: int, limit: int)
+
+(* FILE_READ(consumed, start, limit): consumed are exactly the file's bytes
+   from offset start, up to limit of them or to the end of the file; made
+   only where the reader ends; trusted: the bytes read are the bytes the file
+   holds at that offset, and nobody changes the file while it is read
+   (keyword: content-io) *)
+#pub absprop FILE_READ(consumed: $A.cells, start: int, limit: int)
+
+(* The largest limit an int names: the reader of a whole file *)
+#pub stadef CONTENT_READ_ALL = 2147483647
+
+(* The file at path opened to read from offset start, limit bytes at most *)
+#pub fn content_reader_open_range
+  {lb:agz}{n:pos | n < 1048576}{start,limit:nat}
+  (path: !$A.borrow(byte, lb, n), path_len: int n, start: int start, limit: int limit)
+  : $R.result(content_reader($A.cnil(), start, limit), io_error)
+
+(* The file at path opened to read from its first byte *)
+#pub fn content_reader_open
+  {lb:agz}{n:pos | n < 1048576}
+  (path: !$A.borrow(byte, lb, n), path_len: int n)
+  : $R.result(content_reader($A.cnil(), 0, CONTENT_READ_ALL), io_error)
+
+(* After a read into the buffer buf by the reader of the cells
+   consumed: k more bytes, which are the cells chunk, at the front of the
+   buffer's new cells, the reader's index extended by chunk; the limit
+   reached, consumed being limit cells; the end of the file, before the limit;
+   or why the read failed (the reader is closed). The buffer is given back in
+   every case. *)
+#pub datavtype content_read_outcome($A.cells, int, int, addr, int, $A.cells) =
+  | {consumed,chunk,more,buf,buf2:$A.cells}{start,limit:nat}{l:agz}{n:pos}{k:pos | k <= n}
+    content_read_some(consumed, start, limit, l, n, buf)
+      of ($A.CLEN(chunk, k), $A.HOLDS(buf2, chunk), $A.APPEND(consumed, chunk, more) |
+          content_reader(more, start, limit), $A.barr(l, n, buf2), int k)
+  | {consumed,buf:$A.cells}{start,limit:nat}{l:agz}{n:pos}
+    content_read_limit(consumed, start, limit, l, n, buf)
+      of (FILE_READ(consumed, start, limit), $A.CLEN(consumed, limit) | $A.barr(l, n, buf))
+  | {consumed,buf:$A.cells}{start,limit:nat}{l:agz}{n:pos}
+    content_read_eof(consumed, start, limit, l, n, buf)
+      of (FILE_READ(consumed, start, limit) | $A.barr(l, n, buf))
+  | {consumed,buf:$A.cells}{start,limit:nat}{l:agz}{n:pos}
+    content_read_failed(consumed, start, limit, l, n, buf) of (io_error, $A.barr(l, n, buf))
+
+#pub fn content_read
+  {consumed,buf:$A.cells}{start,limit:nat}{l:agz}{n:pos}
+  (cr: content_reader(consumed, start, limit), buf: $A.barr(l, n, buf), len: int n)
+  : content_read_outcome(consumed, start, limit, l, n, buf)
+
+(* Closes the reader before its end: no proof, the file's close is not
+   answered *)
+#pub fn content_reader_close {consumed:$A.cells}{start,limit:nat}
+  (cr: content_reader(consumed, start, limit)): void
 
 (* ============================================================
    Internal helpers
@@ -1135,3 +1282,162 @@ in
      | ~$R.err(c) => FlushAndCloseFailed(fe, c))
 end
 
+
+(* ============================================================
+   Content writer and reader implementations (keyword: content-io)
+   ============================================================ *)
+
+(* What a content_reader is: the file, and the bytes left to read of its limit *)
+datavtype _reader_rep =
+  | {r:nat} _reader_mk of (fd, int r)
+
+local
+
+$UNSAFE begin
+  assume content_writer(written) = buf_writer
+  assume content_reader(consumed, start, limit) = _reader_rep
+end
+
+in
+
+(* The writer closed with no proof, after a failed call; a close that fails
+   here is not reported, the call's own failure is *)
+fn _writer_abandon(w: buf_writer): void = let
+  val @(flush_r, close_r) = _buf_close_both(w)
+  val () = $R.discard<int><io_error>(flush_r)
+  val () = $R.discard<int><io_error>(close_r)
+in () end
+
+(* buf_write of the first count bytes of a frozen run: the run's borrow as a
+   view of count bytes for the write, then back to the whole view it was *)
+fn _write_run_prefix
+  {l:agz}{n:pos}{k:pos}{cs:$A.cells}{m:pos | m <= n}
+  (w: !buf_writer, fz: !$A.cfrozen(l, n, k, cs),
+   run: !$A.cborrow(l, n, cs), count: int m): $R.result(int, io_error) = let
+  val view = $A.cborrow_view(fz, run)
+  val p = $UNSAFE begin $UNSAFE.castvwtp0{ptr}(view) end
+  val head = $UNSAFE begin $UNSAFE.castvwtp0{$A.borrow(byte, l, m)}(p) end
+  val r = buf_write(w, head, count)
+  val p2 = $UNSAFE begin $UNSAFE.castvwtp0{ptr}(head) end
+  val whole = $UNSAFE begin $UNSAFE.castvwtp0{$A.borrow(byte, l, n)}(p2) end
+  val () = $A.cborrow_view_drop(fz, whole)
+in r end
+
+implement content_create {lb}{n} (path, path_len, mode) =
+  (case+ file_open(path, path_len, WriteOnly(), CreateOrTruncate(), mode) of
+   | ~$R.ok(f) => $R.ok(buf_writer_create(f))
+   | ~$R.err(e) => $R.err(e))
+
+(* The index after the write: both is written then chunk, the one place the
+   writer's claim is made (the write itself was answered ok) *)
+fn _wrote {written,chunk:$A.cells} (cw: buf_writer): content_write_outcome(written, chunk) = let
+  val (appended | _) = $UNSAFE begin
+    $UNSAFE.cast{[both:$A.cells] ($A.APPEND(written, chunk, both) | int)}(0) end
+in content_wrote(appended | cw) end
+
+fn _write_failed {written,chunk:$A.cells} (cw: buf_writer, e: io_error)
+  : content_write_outcome(written, chunk) = let
+  val () = _writer_abandon(cw)
+in content_write_failed(e) end
+
+implement content_write_byte {written}{b} (cw, b) =
+  (case+ buf_write_byte(cw, b) of
+   | ~$R.ok(_) => _wrote{written,$A.ccons(b, $A.cnil())}(cw)
+   | ~$R.err(e) => _write_failed{written,$A.ccons(b, $A.cnil())}(cw, e))
+
+implement content_write {written}{l}{n}{k}{run_cells} (cw, fz, run, len) =
+  (case+ _write_run_prefix(cw, fz, run, len) of
+   | ~$R.ok(_) => _wrote{written,run_cells}(cw)
+   | ~$R.err(e) => _write_failed{written,run_cells}(cw, e))
+
+implement content_write_prefix {written}{l}{n}{k}{run_cells,chunk}{m} (holds, size | cw, fz, run, count) =
+  (case+ _write_run_prefix(cw, fz, run, count) of
+   | ~$R.ok(_) => _wrote{written,chunk}(cw)
+   | ~$R.err(e) => _write_failed{written,chunk}(cw, e))
+
+implement content_flush {written} (cw) =
+  (case+ _buf_do_flush(cw) of
+   | ~$R.ok(_) => content_flushed(cw)
+   | ~$R.err(e) => let val () = _writer_abandon(cw) in content_flush_failed(e) end)
+
+(* The file holds the cells written: the one place the proof is made, after
+   the flush and the close both answered ok *)
+implement content_close {written} (cw) = let
+  val @(flush_r, close_r) = _buf_close_both(cw)
+in
+  case+ flush_r of
+  | ~$R.err(e) => let
+      val () = $R.discard<int><io_error>(close_r)
+    in content_close_failed(e) end
+  | ~$R.ok(_) =>
+    (case+ close_r of
+     | ~$R.err(e) => content_close_failed(e)
+     | ~$R.ok(_) => let
+         val (holds | _) = $UNSAFE begin $UNSAFE.cast{(FILE_HOLDS(written) | int)}(0) end
+       in content_closed(holds | 0) end)
+end
+
+(* The reader opened and moved to start, with limit bytes left to read *)
+implement content_reader_open_range {lb}{n}{start,limit} (path, path_len, start, limit) =
+  (case+ file_open(path, path_len, ReadOnly(), OpenExisting(), 0) of
+   | ~$R.err(e) => $R.err(e)
+   | ~$R.ok(f) => let
+       val moved = (if start > 0 then let
+           val+ @fd_mk(rawfd) = f
+           val r = $UNSAFE begin $extfcall(int, "_file_seek", rawfd, start) end
+           prval () = fold@(f)
+         in r end
+         else 0): int
+     in
+       if moved >= 0 then $R.ok(_reader_mk(f, limit))
+       else let
+         val () = $R.discard<int><io_error>(file_close(f))
+       in $R.err(_io_error(moved)) end
+     end)
+
+implement content_reader_open {lb}{n} (path, path_len) =
+  content_reader_open_range(path, path_len, 0, 2147483647)
+
+implement content_reader_close {consumed}{start,limit} (cr) = let
+  val+ ~_reader_mk(f, _) = cr
+in $R.discard<int><io_error>(file_close(f)) end
+
+(* k more bytes read: the proofs are the reader's claim that they are the
+   chunk at the front of the buffer's new cells, appended to the consumed *)
+fn _read_some
+  {consumed,buf:$A.cells}{start,limit:nat}{l:agz}{n:pos}{r:nat}{k:pos | k <= n; k <= r}
+  (f: fd, left: int r, buf: $A.barr(l, n, buf), got: int k)
+  : content_read_outcome(consumed, start, limit, l, n, buf) = let
+  val (size, holds, appended | buf2) = $UNSAFE begin
+    $UNSAFE.castvwtp0{[chunk,buf2,more:$A.cells]
+      ($A.CLEN(chunk, k), $A.HOLDS(buf2, chunk), $A.APPEND(consumed, chunk, more) | $A.barr(l, n, buf2))}(buf) end
+in content_read_some(size, holds, appended | _reader_mk(f, left - got), buf2, got) end
+
+implement content_read {consumed,buf}{start,limit}{l}{n} (cr, buf, len) = let
+  val+ ~_reader_mk{r}(f, left) = cr
+in
+  if left <= 0 then let
+    val () = $R.discard<int><io_error>(file_close(f))
+    val (ended, full | _) = $UNSAFE begin
+      $UNSAFE.cast{(FILE_READ(consumed, start, limit), $A.CLEN(consumed, limit) | int)}(0) end
+  in content_read_limit(ended, full | buf) end
+  else let
+    val want = (if len < left then len else left): [w:pos | w <= n; w <= r] int w
+    val+ @fd_mk(rawfd) = f
+    val got = $UNSAFE begin $extfcall([k:int | k <= n; k <= r] int k, "_file_read", rawfd,
+      $UNSAFE.castvwtp1{ptr}(buf), want) end
+    prval () = fold@(f)
+  in
+    if got < 0 then let
+      val () = $R.discard<int><io_error>(file_close(f))
+    in content_read_failed(_io_error(got), buf) end
+    else if got = 0 then let
+      val () = $R.discard<int><io_error>(file_close(f))
+      val (ended | _) = $UNSAFE begin
+        $UNSAFE.cast{(FILE_READ(consumed, start, limit) | int)}(0) end
+    in content_read_eof(ended | buf) end
+    else _read_some{consumed,buf}{start,limit}{l}{n}(f, left, buf, got)
+  end
+end
+
+end (* local -- content writer and reader *)

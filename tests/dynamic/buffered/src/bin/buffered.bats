@@ -35,6 +35,7 @@ implement main0 () = let
         val () = $R.discard<int><$F.io_error>($F.buf_write_byte(w, 97))
         val () = $R.discard<int><$F.io_error>($F.buf_write_byte(w, 98 + 256)   (* low byte: 'b' *))
         val () = $R.discard<int><$F.io_error>($F.buf_write_byte(w, 10))
+        val () = $R.discard<int><$F.io_error>($F.buf_flush(w))
         var blk = @[char][6]('c', 'd', '\n', 'x', 'y', 'z')
         val @(fb, bb) = $A.freeze<byte>($S.from_char_array(blk, 6))
         val () = $R.discard<int><$F.io_error>($F.buf_write(w, bb, 6))
