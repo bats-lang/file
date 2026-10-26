@@ -124,7 +124,7 @@ one, is neither entered nor removed (`TreeLeftMounts`; a bind mount on the same 
 detected); a failure does not stop the walk, it is counted and the first reason is kept
 (`TreeLeftSome`), and the directories above an entry that stays stay too; a descent past 256
 directories is a failure (`InvalidFilename`); a directory that gains entries during the walk
-is passed again until a pass removes nothing. Research behind it: GNU `rm` (`--preserve-root`
+is passed again until a pass removes nothing, and only the last pass counts mounts and failures. Research behind it: GNU `rm` (`--preserve-root`
 by default, refuses `.` and `..`, `--one-file-system`), Rust's `std::fs::remove_dir_all`
 (descriptor-relative `unlinkat`, never follows a link, CVE-2022-21658) and Go's
 `os.RemoveAll` (refuses a path ending in `.` or `..`, and walks with `unlinkat`).
@@ -134,9 +134,15 @@ in a `mkdtemp` directory and removes that with `file_remove_tree`; a failure cla
 that fails when the class occurs (shown by injection in the pull request): a link followed
 or removed through, a missing `|0300`, a name that is not a directory accepted, `.` and `..`
 counted as entries, the depth limit, a top taken for a mount point, a rename that copies, and
-swapped symlink arguments. The mount check of `/proc` runs where `/proc/self` exists. Not
-tested: a mount point below the top (it needs privilege to make one) and a failure by
-permission (the suite may run as root); the depth limit is the failure the tests use for
-`TreeLeftSome`. Rejected in `tests/static/reject` (`remove-empty-path`, `temp-directory-small-buffer`,
+swapped symlink arguments. The mount check of `/proc` runs where `/proc/self` exists.
+Keyword remove-tree-mounts: a mount point below the top, and a failure by permission, are
+tested with a tmpfs the test mounts inside its own directory with mount(8) (directly, else
+`sudo -n`): one at `mt/sub` for `TreeLeftMounts`, one at `ro` remounted read-only for
+`TreeLeftSome` with EROFS (an unlink the kernel refuses even to root). Where neither mount
+works the test prints `SKIP mounts` with the exit codes and passes; that is not a run of
+the class. The refusal of the root, the empty path and the dot names was shown by injection
+with every deleting call of the walk replaced by a stand-in that deletes nothing, so a
+build without the refusal cannot delete a real file (the pull request says how). Not
+tested: a bind mount on the same device (not detected, as above). Rejected in `tests/static/reject` (`remove-empty-path`, `temp-directory-small-buffer`,
 `read-link-index-past-buffer`, `make-directories-mode-past-bits`, `remove-tree-left-some-left-out`,
 `rename-outcome-dropped`), with `accept/remove-rename-use` as the control.
