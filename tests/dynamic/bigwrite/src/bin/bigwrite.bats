@@ -5,9 +5,9 @@
 #use result as R
 #use str as S
 
-(* One byte, then a 5000-byte block (larger than the 4096-byte buffer)
-   through buf_write; the file must hold exactly those 5001 bytes. The
-   previous implementation never returned from the second write. *)
+(* One byte, then a 5000-byte block written with file_write; buf_read (the
+   buffered reader, removal #81) must read exactly those 5001 bytes across
+   its 4096-byte buffer. *)
 fun fill {l:agz}{i:nat | i <= 5000} .<5000 - i>. (a: !$A.arr(byte, l, 5000), i: int i): void =
   if i >= 5000 then ()
   else let val () = $A.set<byte>(a, i, $A.int2byte($AR.low_byte(i))) in fill(a, i + 1) end
@@ -31,10 +31,14 @@ implement main0 () = let
   val @(fb, bb) = $A.freeze<byte>(big)
   val wrote = (case+ $F.file_open(bp, 23, $F.WriteOnly(), $F.CreateOrTruncate(), 420) of
     | ~$R.ok(fd) => let
-        val w = $F.buf_writer_create(fd)
-        val () = $R.discard<int><$F.io_error>($F.buf_write_byte(w, 7))
-        val ok = (case+ $F.buf_write(w, bb, 5000) of | ~$R.ok(_) => true | ~$R.err(_) => false): bool
-        val () = $R.discard<int><$F.io_error>($F.buf_writer_close(w))
+        val one = $A.alloc<byte>(1)
+        val () = $A.set<byte>(one, 0, $A.int2byte(7))
+        val @(fo, bo) = $A.freeze<byte>(one)
+        val ok1 = (case+ $F.file_write(fd, bo, 1) of | ~$R.ok(_) => true | ~$R.err(_) => false): bool
+        val () = $A.drop<byte>(fo, bo)
+        val () = $A.free<byte>($A.thaw<byte>(fo))
+        val ok = (case+ $F.file_write(fd, bb, 5000) of | ~$R.ok(_) => ok1 | ~$R.err(_) => false): bool
+        val () = $R.discard<int><$F.io_error>($F.file_close(fd))
       in ok end
     | ~$R.err(_) => false): bool
   val () = $A.drop<byte>(fb, bb)

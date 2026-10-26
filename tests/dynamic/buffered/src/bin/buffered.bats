@@ -4,8 +4,8 @@
 #use result as R
 #use str as S
 
-(* Writes "ab\ncd\nxyz" through buf_writer (bytes and a block), reads it
-   back with buf_read_line and buf_read. Exits 1 on any mismatch.
+(* Writes "ab\ncd\nxyz" with file_write, reads it back with buf_read_line
+   and buf_read (the buffered reader, removal #81). Exits 1 on any mismatch.
    Open flags are Linux values (577 = O_WRONLY|O_CREAT|O_TRUNC), as in
    the rest of bats-lang for now. *)
 fn check (name: string, ok: bool): bool = let
@@ -31,19 +31,14 @@ implement main0 () = let
   (* write *)
   val w_ok = (case+ $F.file_open(bp, 24, $F.WriteOnly(), $F.CreateOrTruncate(), 420) of
     | ~$R.ok(fd) => let
-        val w = $F.buf_writer_create(fd)
-        val () = $R.discard<int><$F.io_error>($F.buf_write_byte(w, 97))
-        val () = $R.discard<int><$F.io_error>($F.buf_write_byte(w, 98 + 256)   (* low byte: 'b' *))
-        val () = $R.discard<int><$F.io_error>($F.buf_write_byte(w, 10))
-        val () = $R.discard<int><$F.io_error>($F.buf_flush(w))
-        var blk = @[char][6]('c', 'd', '\n', 'x', 'y', 'z')
-        val @(fb, bb) = $A.freeze<byte>($S.from_char_array(blk, 6))
-        val () = $R.discard<int><$F.io_error>($F.buf_write(w, bb, 6))
+        var blk = @[char][9]('a', 'b', '\n', 'c', 'd', '\n', 'x', 'y', 'z')
+        val @(fb, bb) = $A.freeze<byte>($S.from_char_array(blk, 9))
+        val ok = (case+ $F.file_write(fd, bb, 9) of | ~$R.ok(_) => true | ~$R.err(_) => false): bool
         val () = $A.drop<byte>(fb, bb)
         val () = $A.free<byte>($A.thaw<byte>(fb))
-        val c = $F.buf_writer_close(w)
+        val c = $F.file_close(fd)
         val () = $R.discard<int><$F.io_error>(c)
-      in true end
+      in ok end
     | ~$R.err(_) => false): bool
   val r0 = check("open for write", w_ok)
   (* read back *)

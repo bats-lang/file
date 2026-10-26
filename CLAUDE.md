@@ -29,18 +29,6 @@ own. A pull request that needs newer packages runs `bats lock
 --repository <dir>` and commits `bats.lock` (and
 `.github/repository-version`) with the change.
 
-## Buffered-writer close (#61)
-
-`buf_writer_close` flushes and closes but returns only the close's answer: a
-failed final write is reported as success. It is kept as published, deprecated
-(removal: #74), and `buf_writer_close_checked` is beside it: it returns a
-`close_outcome` (`Closed`, `FlushFailed(e)`, `CloseFailed(e)`,
-`FlushAndCloseFailed(flush_e, close_e)`), a linear type, so a caller must match
-it with `case+`. The writer is closed in every case. `tests/dynamic/closeflush`
-fails the final write with a read-only descriptor (`BadDescriptor`) and calls
-both forms; `tests/static/reject/close-outcome-flush-left-out` rejects a match
-without `FlushFailed`.
-
 ## Content writer and reader: the bytes of a file in the type (#76)
 
 Keyword: content-io. `content_writer(written)` is a linear writer indexed by the
@@ -89,6 +77,11 @@ the text before the first number names the error and the variable. The package h
 declarations: weaken the type each reject guards and the reject is accepted, shown in
 the pull request.
 
-**Old forms.** `buf_writer` and its functions (removal: #80) and `buf_reader` and its
-functions (removal: #81) are kept with their types, marked deprecated by a one-line
-comment, and called by `tests/dynamic/buffered` and `tests/dynamic/closeflush`.
+**Old forms.** `buf_reader` and its functions (removal: #81) are kept with their types,
+marked deprecated by a one-line comment, and called by `tests/dynamic/buffered` and
+`tests/dynamic/bigwrite` (which write with `file_write`). `buf_writer`, its functions,
+`buf_writer_close_checked` and `close_outcome` were removed by #80 (every newest archive
+in repository-prototype was free of them, and the content writer had been published
+beside them in file 2026.10.26.17291); `content_writer`'s representation is a private
+datavtype (`_writer_rep`), and `tests/dynamic/closeflush` and
+`tests/static/reject/close-outcome-flush-left-out` went with them.

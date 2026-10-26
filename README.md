@@ -9,7 +9,7 @@ File system operations for the [Bats](https://github.com/bats-lang) programming 
   CreateOrTruncate | CreateOrAppend | TruncateExisting | AppendExisting`)
 - Failures are an `io_error` (`NotFound`, `PermissionDenied`, ...,
   `Unrecognized`), decoded once from the errno; `io_error_text` words it
-- Buffered writer (`buf_writer`)
+- Content writer and reader indexed by the bytes of a file (`content_writer`, `content_reader`)
 - File metadata (`file_mtime`, `file_stat`)
 - Directory operations (`dir_open`, `dir_next`, `dir_close`)
 - Change directory (`file_chdir`)

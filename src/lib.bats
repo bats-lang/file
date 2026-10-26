@@ -532,45 +532,6 @@ end
 #pub fn buf_reader_close(r: buf_reader): $R.result(int, io_error)
 
 (* ============================================================
-   Buffered writer
-   ============================================================ *)
-
-(* pos < BUF_SIZE bytes are pending: a write that fills the buffer
-   writes it out. *)
-(* Deprecated, content-io: content_writer is beside it; removed by #80 *)
-#pub datavtype buf_writer =
-  | {lb:agz}{p:nat | p < BUF_SIZE}
-    buf_writer_mk of (fd, $A.arr(byte, lb, BUF_SIZE), int p)
-
-(* Deprecated, content-io: removed by #80 *)
-#pub fn buf_writer_create(f: fd): buf_writer
-
-(* Deprecated, content-io: removed by #80 *)
-#pub fn buf_write
-  {lb:agz}{n:pos}
-  (w: !buf_writer, data: !$A.borrow(byte, lb, n), len: int n): $R.result(int, io_error)
-
-(* Deprecated, content-io: removed by #80 *)
-#pub fn buf_write_byte(w: !buf_writer, b: int): $R.result(int, io_error)
-
-(* Deprecated, content-io: removed by #80 *)
-#pub fn buf_flush(w: !buf_writer): $R.result(int, io_error)
-
-(* Deprecated, buffered-writer close (#61): drops the flush error; removed by #74 *)
-#pub fn buf_writer_close(w: buf_writer): $R.result(int, io_error)
-
-(* How a close ended, flush and close each answered (#61): the writer is
-   closed in every case, and each failure is its own constructor. *)
-#pub datavtype close_outcome =
-  | Closed                                         (* flushed and closed *)
-  | FlushFailed of (io_error)                      (* final write failed, closed *)
-  | CloseFailed of (io_error)                      (* flushed, close failed *)
-  | FlushAndCloseFailed of (io_error, io_error)    (* flush's, then close's *)
-
-(* Deprecated, content-io: removed by #80 *)
-#pub fn buf_writer_close_checked(w: buf_writer): close_outcome
-
-(* ============================================================
    Content writer: the type holds the bytes written (keyword: content-io)
    ============================================================ *)
 
@@ -1135,12 +1096,18 @@ implement buf_reader_close(r) = let
 in file_close(f) end
 
 (* ============================================================
-   Buffered writer implementations
+   Content writer's private buffer (keyword: content-io)
    ============================================================ *)
 
-implement buf_writer_create(f) = let
+(* What a content_writer is: pos < BUF_SIZE bytes are pending; a write that
+   fills the buffer writes it out. Private since #80 removed buf_writer. *)
+datavtype _writer_rep =
+  | {lb:agz}{p:nat | p < BUF_SIZE}
+    _writer_mk of (fd, $A.arr(byte, lb, BUF_SIZE), int p)
+
+fn _writer_create(f: fd): _writer_rep = let
   val buf = $A.alloc<byte>(4096)
-in buf_writer_mk(f, buf, 0) end
+in _writer_mk(f, buf, 0) end
 
 (* buf[0, c) written to f: the count, or why it was not *)
 fn _write_prefix {lb:agz}{c:pos | c <= BUF_SIZE}
@@ -1156,8 +1123,8 @@ in
   @($A.thaw<byte>(fz), (if written >= 0 then $R.ok(written) else $R.err(_io_error(written))): $R.result(int, io_error))
 end
 
-fn _buf_do_flush(w: !buf_writer): $R.result(int, io_error) = let
-  val+ @buf_writer_mk(f, buf, pos) = w
+fn _buf_do_flush(w: !_writer_rep): $R.result(int, io_error) = let
+  val+ @_writer_mk(f, buf, pos) = w
 in
   if pos <= 0 then let
     prval () = fold@(w)
@@ -1170,12 +1137,10 @@ in
   in r end
 end
 
-implement buf_flush(w) = _buf_do_flush(w)
-
 (* A full buffer is flushed before the byte is stored; the byte is the
    low 8 bits of b, as before, now without a cast. *)
-implement buf_write_byte(w, b) = let
-  val+ @buf_writer_mk(f, buf, pos) = w
+fn _writer_write_byte(w: !_writer_rep, b: int): $R.result(int, io_error) = let
+  val+ @_writer_mk(f, buf, pos) = w
   val () = $A.set<byte>(buf, pos, $A.int2byte($AR.low_byte(b)))
   val np = pos + 1
 in
@@ -1203,8 +1168,8 @@ fun _copy_in {ld,ls:agz}{n:pos}{p,c:nat | p + c <= BUF_SIZE; c <= n}{k:nat | k <
 (* After a flush: buffer the data if it now fits, otherwise (it is larger
    than the buffer) write it straight to the file. No recursion. *)
 fn _buf_write_flushed {lb:agz}{n:pos}
-  (w: !buf_writer, data: !$A.borrow(byte, lb, n), len: int n): $R.result(int, io_error) = let
-  val+ @buf_writer_mk(f, buf, pos) = w
+  (w: !_writer_rep, data: !$A.borrow(byte, lb, n), len: int n): $R.result(int, io_error) = let
+  val+ @_writer_mk(f, buf, pos) = w
 in
   if pos + len < 4096 then let
     val () = _copy_in(buf, data, pos, 0, len)
@@ -1228,8 +1193,9 @@ in
   end
 end
 
-implement buf_write {lb}{n} (w, data, len) = let
-  val+ @buf_writer_mk(f, buf, pos) = w
+fn _writer_write {lb:agz}{n:pos}
+  (w: !_writer_rep, data: !$A.borrow(byte, lb, n), len: int n): $R.result(int, io_error) = let
+  val+ @_writer_mk(f, buf, pos) = w
 in
   if pos + len < 4096 then let
     val () = _copy_in(buf, data, pos, 0, len)
@@ -1254,33 +1220,13 @@ in
 end
 
 (* Flush, then close: the flush's answer and the close's, both kept *)
-fn _buf_close_both(w: buf_writer)
+fn _buf_close_both(w: _writer_rep)
   : @($R.result(int, io_error), $R.result(int, io_error)) = let
   val flush_r = _buf_do_flush(w)
-  val+ ~buf_writer_mk(f, buf, _) = w
+  val+ ~_writer_mk(f, buf, _) = w
   val () = $A.free<byte>(buf)
   val close_r = file_close(f)
 in @(flush_r, close_r) end
-
-(* buffered-writer close (#61): the flush's answer is dropped, as published *)
-implement buf_writer_close(w) = let
-  val @(flush_r, close_r) = _buf_close_both(w)
-  val () = $R.discard<int><io_error>(flush_r)
-in close_r end
-
-implement buf_writer_close_checked(w) = let
-  val @(flush_r, close_r) = _buf_close_both(w)
-in
-  case+ flush_r of
-  | ~$R.ok(_) =>
-    (case+ close_r of
-     | ~$R.ok(_) => Closed()
-     | ~$R.err(c) => CloseFailed(c))
-  | ~$R.err(fe) =>
-    (case+ close_r of
-     | ~$R.ok(_) => FlushFailed(fe)
-     | ~$R.err(c) => FlushAndCloseFailed(fe, c))
-end
 
 
 (* ============================================================
@@ -1294,7 +1240,7 @@ datavtype _reader_rep =
 local
 
 $UNSAFE begin
-  assume content_writer(written) = buf_writer
+  assume content_writer(written) = _writer_rep
   assume content_reader(consumed, start, limit) = _reader_rep
 end
 
@@ -1302,22 +1248,22 @@ in
 
 (* The writer closed with no proof, after a failed call; a close that fails
    here is not reported, the call's own failure is *)
-fn _writer_abandon(w: buf_writer): void = let
+fn _writer_abandon(w: _writer_rep): void = let
   val @(flush_r, close_r) = _buf_close_both(w)
   val () = $R.discard<int><io_error>(flush_r)
   val () = $R.discard<int><io_error>(close_r)
 in () end
 
-(* buf_write of the first count bytes of a frozen run: the run's borrow as a
+(* _writer_write of the first count bytes of a frozen run: the run's borrow as a
    view of count bytes for the write, then back to the whole view it was *)
 fn _write_run_prefix
   {l:agz}{n:pos}{k:pos}{cs:$A.cells}{m:pos | m <= n}
-  (w: !buf_writer, fz: !$A.cfrozen(l, n, k, cs),
+  (w: !_writer_rep, fz: !$A.cfrozen(l, n, k, cs),
    run: !$A.cborrow(l, n, cs), count: int m): $R.result(int, io_error) = let
   val view = $A.cborrow_view(fz, run)
   val p = $UNSAFE begin $UNSAFE.castvwtp0{ptr}(view) end
   val head = $UNSAFE begin $UNSAFE.castvwtp0{$A.borrow(byte, l, m)}(p) end
-  val r = buf_write(w, head, count)
+  val r = _writer_write(w, head, count)
   val p2 = $UNSAFE begin $UNSAFE.castvwtp0{ptr}(head) end
   val whole = $UNSAFE begin $UNSAFE.castvwtp0{$A.borrow(byte, l, n)}(p2) end
   val () = $A.cborrow_view_drop(fz, whole)
@@ -1325,23 +1271,23 @@ in r end
 
 implement content_create {lb}{n} (path, path_len, mode) =
   (case+ file_open(path, path_len, WriteOnly(), CreateOrTruncate(), mode) of
-   | ~$R.ok(f) => $R.ok(buf_writer_create(f))
+   | ~$R.ok(f) => $R.ok(_writer_create(f))
    | ~$R.err(e) => $R.err(e))
 
 (* The index after the write: both is written then chunk, the one place the
    writer's claim is made (the write itself was answered ok) *)
-fn _wrote {written,chunk:$A.cells} (cw: buf_writer): content_write_outcome(written, chunk) = let
+fn _wrote {written,chunk:$A.cells} (cw: _writer_rep): content_write_outcome(written, chunk) = let
   val (appended | _) = $UNSAFE begin
     $UNSAFE.cast{[both:$A.cells] ($A.APPEND(written, chunk, both) | int)}(0) end
 in content_wrote(appended | cw) end
 
-fn _write_failed {written,chunk:$A.cells} (cw: buf_writer, e: io_error)
+fn _write_failed {written,chunk:$A.cells} (cw: _writer_rep, e: io_error)
   : content_write_outcome(written, chunk) = let
   val () = _writer_abandon(cw)
 in content_write_failed(e) end
 
 implement content_write_byte {written}{b} (cw, b) =
-  (case+ buf_write_byte(cw, b) of
+  (case+ _writer_write_byte(cw, b) of
    | ~$R.ok(_) => _wrote{written,$A.ccons(b, $A.cnil())}(cw)
    | ~$R.err(e) => _write_failed{written,$A.ccons(b, $A.cnil())}(cw, e))
 

@@ -1,8 +1,0 @@
-[package]
-name = "close-outcome-flush-left-out"
-kind = "lib"
-
-[dependencies]
-"array" = ""
-"file" = ""
-"result" = ""
