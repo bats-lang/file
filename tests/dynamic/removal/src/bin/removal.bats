@@ -1,6 +1,9 @@
 #include "share/atspre_staload.hats"
 #use array as A
+#use builder as B
 #use file as F
+#use list as L
+#use process as P
 #use result as R
 
 (* Renaming, removing, links and status (keyword: remove-rename), each on
@@ -31,6 +34,7 @@ fn ecode (e: $F.io_error): int =
   | $F.NotADirectory() => 4
   | $F.IsADirectory() => 5
   | $F.DirectoryNotEmpty() => 6
+  | $F.ReadOnlyFilesystem() => 7
   | $F.FilesystemLoop() => 8
   | $F.InvalidFilename() => 9
   | $F.InvalidInput() => 10
@@ -115,6 +119,20 @@ fn op_tree {n:pos | n < 1048576} (s: string n, n: int n): @(int, int, int, int, 
   val () = $A.drop<byte>(fz, b)
   val () = $A.free<byte>($A.thaw<byte>(fz))
 in r end
+
+(* the empty path: one byte, a NUL, which the C side reads as "" *)
+fn op_tree_empty (): @(int, int, int, int, int) = let
+  val p = $A.alloc<byte>(1)
+  val () = $A.set<byte>(p, 0, $A.int2byte(0))
+  val @(fz, b) = $A.freeze<byte>(p)
+  val r = tree_code(b, 1)
+  val () = $A.drop<byte>(fz, b)
+  val () = $A.free<byte>($A.thaw<byte>(fz))
+in r end
+
+(* the tree's code when c holds, else kind -1 (nothing was tried) *)
+fn op_tree_when {n:pos | n < 1048576} (c: bool, s: string n, n: int n): @(int, int, int, int, int) =
+  if c then op_tree(s, n) else @(~1, 0, 0, 0, 0)
 
 fn op_tree_deep {k:pos | k <= 500} (k: int k): @(int, int, int, int, int) = let
   val p = deep_path(k)
@@ -378,6 +396,7 @@ fn work_tree (): bool =
   && check("remove_tree of nothing", (op_tree("t", 1)).0 = 1)
   && check("refuses /", (op_tree("/", 1)).0 = 2)
   && check("refuses //", (op_tree("//", 2)).0 = 2)
+  && check("refuses the empty path", (op_tree_empty()).0 = 2)
   && check("refuses /./", (op_tree("/./", 3)).0 = 3)
   && check("refuses .", (op_tree(".", 1)).0 = 3)
   && check("refuses ./", (op_tree("./", 2)).0 = 3)
@@ -399,13 +418,147 @@ fn work_tree (): bool =
   && check("its lower part is removed whole", (let val r = op_tree_deep(130) in r.0 = 0 && r.1 = 131 end))
   && check("then the rest", (let val r = op_tree_deep(1) in r.0 = 0 && r.1 = 129 end))
 
+(* ---- mounts, made by the mount program (keyword: remove-tree-mounts) ----
+   Two classes need a second file system inside the test's own directory: a
+   mount point below the top (TreeLeftMounts) and an unlink the kernel
+   refuses even to root (TreeLeftSome, here EROFS from a tmpfs remounted
+   read-only). The test mounts a tmpfs there with mount(8), directly or
+   through sudo -n, and unmounts it before it ends. Where neither is
+   allowed it says SKIP and the reason, and passes: that is not a run of
+   the class. *)
+fn arg {sn:nat | sn <= 1024} (s: string sn): $P.arg_entry = let
+  var b = $B.create()
+  val () = $B.bput(b, s)
+  val @(arr, len) = $B.to_arr(b)
+in @(arr, len) end
+
+fn code (o: $P.child_outcome): int =
+  case+ o of
+  | ~$P.child_exited(n) => n
+  | ~$P.child_signaled(n) => 1000 + n
+  | ~$P.child_wait_failed(e) => 2000 + e
+  | ~$P.child_wait_unexpected(s) => 3000 + s
+
+(* the program cmd (found on PATH) with argv, its exit status; 3000000 if it could not start *)
+fn spawn_code {sn:nat | sn <= 1024} (cmd: string sn, argv: $L.listv($P.arg_entry)): int = let
+  val (nul | pa) = $P.path_of_string_proved(cmd)
+  val @(fp, bp) = $A.barr_freeze(pa)
+  val r = $P.spawn_inherit_env_proved(nul | bp, argv, $P.dev_null(), $P.dev_null(), $P.dev_null())
+  val () = $A.cborrow_drop(fp, bp)
+  val () = $A.barr_free($A.barr_thaw(fp))
+in
+  case+ r of
+  | ~$R.ok(sp) => let
+      val+ ~$P.spawn_pipes_mk(c, i, o, e) = sp
+      val () = $P.pipe_end_close(i)
+      val () = $P.pipe_end_close(o)
+      val () = $P.pipe_end_close(e)
+    in code($P.child_wait_outcome(c)) end
+  | ~$R.err(_) => 3000000
+end
+
+(* via 0: mount directly, 1: through sudo -n *)
+fn mount_tmpfs {sn:nat | sn <= 1024} (via: int, dir: string sn): int =
+  if via = 0 then
+    spawn_code("mount", $L.list_vt_cons(arg("mount"), $L.list_vt_cons(arg("-t"), $L.list_vt_cons(arg("tmpfs"),
+      $L.list_vt_cons(arg("tmpfs"), $L.list_vt_cons(arg(dir), $L.list_vt_nil()))))))
+  else
+    spawn_code("sudo", $L.list_vt_cons(arg("sudo"), $L.list_vt_cons(arg("-n"), $L.list_vt_cons(arg("mount"),
+      $L.list_vt_cons(arg("-t"), $L.list_vt_cons(arg("tmpfs"), $L.list_vt_cons(arg("tmpfs"),
+      $L.list_vt_cons(arg(dir), $L.list_vt_nil()))))))))
+
+fn remount_read_only {sn:nat | sn <= 1024} (via: int, dir: string sn): int =
+  if via = 0 then
+    spawn_code("mount", $L.list_vt_cons(arg("mount"), $L.list_vt_cons(arg("-o"), $L.list_vt_cons(arg("remount,ro"),
+      $L.list_vt_cons(arg(dir), $L.list_vt_nil())))))
+  else
+    spawn_code("sudo", $L.list_vt_cons(arg("sudo"), $L.list_vt_cons(arg("-n"), $L.list_vt_cons(arg("mount"),
+      $L.list_vt_cons(arg("-o"), $L.list_vt_cons(arg("remount,ro"), $L.list_vt_cons(arg(dir), $L.list_vt_nil())))))))
+
+fn unmount {sn:nat | sn <= 1024} (via: int, dir: string sn): int =
+  if via = 0 then
+    spawn_code("umount", $L.list_vt_cons(arg("umount"), $L.list_vt_cons(arg(dir), $L.list_vt_nil())))
+  else
+    spawn_code("sudo", $L.list_vt_cons(arg("sudo"), $L.list_vt_cons(arg("-n"), $L.list_vt_cons(arg("umount"),
+      $L.list_vt_cons(arg(dir), $L.list_vt_nil())))))
+
 (* A mount point at the top is left alone: /proc is one on Linux (its own
    device), where it exists. *)
-fn work_mount (): bool =
+fn work_mount_top (): bool =
   if op_exists("/proc/self", 10) then
     check("a mount point at the top is left", (let val r = op_tree("/proc", 5) in
       r.0 = 5 && r.1 = 0 && r.3 = 1 end))
   else true
+
+(* A tmpfs mounted at mt/sub, below the top mt: the walk removes what is on
+   the top's device, leaves the mount point and what is in it, and says
+   TreeLeftMounts (5). After the unmount the rest goes. *)
+fn work_mount_below (via: int): bool = let
+  val ready = ((op_mkdirs("mt/sub", 6, 493) = 2) && op_make_file("mt/f", 4))
+  val mounted = (mount_tmpfs(via, "mt/sub") = 0)
+  val inside = (if mounted then op_make_file("mt/sub/inner", 12) else false)
+  val r = op_tree_when(mounted, "mt", 2)
+  val inner_kept = op_exists("mt/sub/inner", 12)
+  val sub_kept = op_exists("mt/sub", 6)
+  val unmounted = (if mounted then (unmount(via, "mt/sub") = 0) else false)
+  val rest = op_tree("mt", 2)
+  val shown = (if r.0 = 5 && r.1 = 1 && r.2 = 0 && r.3 = 1 && r.4 = 0 then true else (println! ("mount below the top: got ", r.0, " ", r.1, " ", r.2, " ", r.3, " ", r.4); false))
+in
+  check("make mt and mt/f", ready) && check("mount a tmpfs at mt/sub", mounted)
+  && check("a file inside the mount", inside)
+  && check("a mount point below the top is left: TreeLeftMounts, mt/f removed, one mount",
+       shown)
+  && check("the mount and what is in it are untouched", inner_kept && sub_kept)
+  && check("unmount", unmounted)
+  && check("then the rest is removed: mt and mt/sub", rest.0 = 0 && rest.1 = 2)
+end
+
+(* A tmpfs mounted at ro, remounted read-only after ro/d/f and ro/d/x/g were
+   made: every unlink fails with EROFS (7) even for root. The walk counts
+   both, keeps the first reason, leaves the directories and says
+   TreeLeftSome (6) with nothing removed. *)
+fn work_unlink_refused (via: int): bool = let
+  val mounted = ((op_mkdirs("ro", 2, 493) = 1) && (mount_tmpfs(via, "ro") = 0))
+  val built = (if mounted then ((op_mkdirs("ro/d/x", 6, 493) = 2) && op_make_file("ro/d/f", 6)
+    && op_make_file("ro/d/x/g", 8)) else false)
+  val sealed = (if built then (remount_read_only(via, "ro") = 0) else false)
+  val r = op_tree_when(sealed, "ro/d", 4)
+  val f_kept = op_exists("ro/d/f", 6)
+  val g_kept = op_exists("ro/d/x/g", 8)
+  val unmounted = (if mounted then (unmount(via, "ro") = 0) else false)
+  val shown = (if r.0 = 6 && r.1 = 0 && r.2 = 2 && r.3 = 0 && r.4 = 7 then true else (println! ("refused unlinks: got ", r.0, " ", r.1, " ", r.2, " ", r.3, " ", r.4); false))
+in
+  check("mount a tmpfs at ro and fill ro/d", mounted && built)
+  && check("remount it read-only", sealed)
+  && check("failed unlinks are counted and the first errno kept: TreeLeftSome, 0 removed, 2 kept, EROFS",
+       shown)
+  && check("what failed is still there", f_kept && g_kept)
+  && check("unmount", unmounted)
+end
+
+(* the probe mount at "probe" when run holds, else ~1 *)
+fn probe_mount (run: bool, via: int): int = if run then mount_tmpfs(via, "probe") else ~1
+fn probe_unmount (run: bool, via: int): int = if run then unmount(via, "probe") else ~1
+
+(* 0 when mount works directly, 1 through sudo -n, else ~1 (the two codes are printed) *)
+fn mount_way (): int = let
+  val made = (op_mkdirs("probe", 5, 493) = 1)
+  val direct = probe_mount(made, 0)
+  val direct_ok = (direct = 0)
+  val _ = probe_unmount(direct_ok, 0)
+  val sudo = probe_mount(made && not(direct_ok), 1)
+  val sudo_ok = (sudo = 0)
+  val _ = probe_unmount(sudo_ok, 1)
+in
+  if direct_ok then 0
+  else if sudo_ok then 1
+  else let val () = println! ("SKIP mounts: mount exited ", direct, ", sudo -n mount exited ", sudo,
+    ": the mount-point and refused-unlink classes were not run here") in ~1 end
+end
+
+fn work_mount (): bool =
+  work_mount_top() && (let val via = mount_way() in
+    if via < 0 then true else work_mount_below(via) && work_unlink_refused(via) end)
 
 fn work (): bool =
   work_dirs() && work_info() && work_symlinks() && work_remove() && work_rename()

@@ -414,7 +414,8 @@ static int _file_mkdtemp(const char *prefix, int n, char *out) {
    a link during the walk is not followed. A directory on another
    device than the top's is a mount point: it is neither entered nor
    removed. Failures do not stop the walk: each is counted, the first is
-   kept. */
+   kept. A directory is passed again while a pass removes something, and
+   only its last pass counts failures and mounts, so none is counted twice. */
 typedef struct { int removed; int kept; int mounts; int first; dev_t dev; } _file_tree_t;
 #define _FILE_TREE_DEPTH 256
 static void _file_tree_count(int *n) { if (*n < 2147483647) (*n)++; }
@@ -426,10 +427,13 @@ static void _file_tree_failed(_file_tree_t *t, int e) {
 static void _file_tree_empty(_file_tree_t *t, int dfd, int depth) {
   DIR *d = fdopendir(dfd);
   int progress;
+  int kept0 = t->kept, mounts0 = t->mounts, first0 = t->first;
   if (!d) { _file_tree_failed(t, errno); close(dfd); return; }
   do {
     struct dirent *e;
     progress = 0;
+    /* a pass counts afresh: what failed or was a mount in the last pass is what is left */
+    t->kept = kept0; t->mounts = mounts0; t->first = first0;
     rewinddir(d);
     for (;;) {
       struct stat st;
