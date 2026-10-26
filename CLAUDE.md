@@ -81,7 +81,10 @@ refuse a write (a byte written to a file of the process that takes only numbers)
 `tests/static/accept/content-use` and the rejects in `tests/static/reject`:
 `write-index-unchanged`, `close-proof-other-sequence`, `use-after-failed-write`,
 `read-index-unchanged`, `read-proof-other-range`, `use-after-failed-read`, each with the
-exact patsopt error in `expect`. The package has no lemma of its own, so quire's
+patsopt's error in `expect`, up to the first counter: patsopt numbers its variables
+(`both$5131(12192)`) by what it has read first, and the numbers differ between this
+machine and CI's run of the same fixture, so an `expect` that held them failed in CI;
+the text before the first number names the error and the variable. The package has no lemma of its own, so quire's
 `mutation_check.py` finds none to mutate (as in process); the mutants are the
 declarations: weaken the type each reject guards and the reject is accepted, shown in
 the pull request.
