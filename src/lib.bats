@@ -291,6 +291,234 @@ static int _file_unlock(int fd) {
   }
   return 0;
 }
+/* ---- Renaming, removing, links and status (keyword: remove-rename) ---- */
+
+/* rename(2): atomic when both paths are on one file system; 0, or the
+   failure (EXDEV across file systems, ENOTEMPTY, ...). */
+static int _file_rename(const char *from, const char *to) {
+  return rename(from, to) == 0 ? 0 : _file_failed(errno);
+}
+/* Removes the file or empty directory at path and never follows a
+   symlink (a link is unlinked, not its target): 1 for a file or link,
+   2 for an empty directory, or the failure. */
+static int _file_remove(const char *path) {
+  struct stat st;
+  if (lstat(path, &st) != 0) return _file_failed(errno);
+  if (S_ISDIR(st.st_mode)) return rmdir(path) == 0 ? 2 : _file_failed(errno);
+  return unlink(path) == 0 ? 1 : _file_failed(errno);
+}
+static int _file_symlink(const char *target, const char *path) {
+  return symlink(target, path) == 0 ? 0 : _file_failed(errno);
+}
+/* The target of the symlink at path in buf[0, cap): the number of bytes
+   (less than cap), cap when the target has cap bytes or more (it may be
+   cut), -100 when path is not a symlink (readlink's EINVAL), or the
+   failure. */
+static int _file_readlink(const char *path, char *buf, int cap) {
+  ssize_t n = readlink(path, buf, (size_t)cap);
+  if (n < 0) return errno == EINVAL ? -100 : _file_failed(errno);
+  return (int)n;
+}
+/* What lstat(2) says of path (a symlink is not followed): 0 with the
+   kind (0 regular file, 1 directory, 2 symlink, 3 anything else), the
+   size, the permission bits (st_mode & 07777) and the owner's user id in
+   the four outputs, or the failure; EFBIG/EOVERFLOW when the size or the
+   owner does not fit an int. */
+static int _file_lstat(const char *path, int *kind, int *size, int *mode, int *owner) {
+  struct stat st;
+  if (lstat(path, &st) != 0) return _file_failed(errno);
+  if (st.st_size < 0 || st.st_size > 2147483647) return _file_failed(EFBIG);
+  if ((unsigned long long)st.st_uid > 2147483647ULL) return _file_failed(EOVERFLOW);
+  *kind = S_ISREG(st.st_mode) ? 0 : S_ISDIR(st.st_mode) ? 1 : S_ISLNK(st.st_mode) ? 2 : 3;
+  *size = (int)st.st_size;
+  *mode = (int)(st.st_mode & 07777);
+  *owner = (int)st.st_uid;
+  return 0;
+}
+/* Whether the directory at path (not a symlink to one) has no entry
+   but . and ..: 1 empty, 0 has entries, 2 not a directory, or the
+   failure. */
+static int _file_dir_empty(const char *path) {
+  struct stat st;
+  DIR *d;
+  struct dirent *e;
+  int empty = 1;
+  if (lstat(path, &st) != 0) return _file_failed(errno);
+  if (!S_ISDIR(st.st_mode)) return 2;
+  d = opendir(path);
+  if (!d) return _file_failed(errno);
+  for (;;) {
+    errno = 0;
+    e = readdir(d);
+    if (!e) break;
+    if (strcmp(e->d_name, ".") != 0 && strcmp(e->d_name, "..") != 0) { empty = 0; break; }
+  }
+  if (e == (struct dirent *)0 && errno != 0) {
+    int saved = errno;
+    closedir(d);
+    return _file_failed(saved);
+  }
+  closedir(d);
+  return empty;
+}
+/* mkdir -p: every missing directory of path is made, the last with
+   mode and the ones before it with mode | 0300 (as mkdir -p, so the
+   walk can go on); one that exists as a directory is left as it is. 0
+   with the number made in *created, or the failure (the directories
+   made before it stay). EEXIST when a name is there and is not a
+   directory. */
+static int _file_mkdir_one(char *path, int mode, int *created) {
+  struct stat st;
+  if (mkdir(path, (mode_t)mode) == 0) { (*created)++; return 0; }
+  if (errno == EEXIST && stat(path, &st) == 0 && S_ISDIR(st.st_mode)) return 0;
+  return _file_failed(errno);
+}
+static int _file_mkdirs(const char *path, int mode, int *created) {
+  size_t len = strlen(path);
+  char *copy = (char *)malloc(len + 1);
+  size_t i = 0;
+  int r = 0;
+  *created = 0;
+  if (!copy) return _file_failed(ENOMEM);
+  memcpy(copy, path, len + 1);
+  while (i < len && copy[i] == '/') i++;
+  for (; i < len; i++) {
+    if (copy[i] == '/') {
+      copy[i] = '\0';
+      r = _file_mkdir_one(copy, mode | 0300, created);
+      copy[i] = '/';
+      if (r != 0) { free(copy); return r; }
+    }
+  }
+  r = _file_mkdir_one(copy, mode, created);
+  free(copy);
+  return r;
+}
+/* mkdtemp(3) on prefix (n bytes) followed by XXXXXX: the directory is
+   made with mode 0700 and its path, n + 6 bytes, is copied to out. 0, or
+   the failure. */
+static int _file_mkdtemp(const char *prefix, int n, char *out) {
+  char *t = (char *)malloc((size_t)n + 7);
+  if (!t) return _file_failed(ENOMEM);
+  memcpy(t, prefix, (size_t)n);
+  memcpy(t + n, "XXXXXX", 7);
+  if (!mkdtemp(t)) { int saved = errno; free(t); return _file_failed(saved); }
+  memcpy(out, t, (size_t)n + 6);
+  free(t);
+  return 0;
+}
+
+/* remove_tree (keyword: remove-tree). The walk uses descriptors
+   (openat, fstatat, unlinkat with O_NOFOLLOW and AT_SYMLINK_NOFOLLOW), so
+   a symlink is unlinked and never entered, and a directory swapped for
+   a link during the walk is not followed. A directory on another
+   device than the top's is a mount point: it is neither entered nor
+   removed. Failures do not stop the walk: each is counted, the first is
+   kept. A directory is passed again while a pass removes something, and
+   only its last pass counts failures and mounts, so none is counted twice. */
+typedef struct { int removed; int kept; int mounts; int first; dev_t dev; } _file_tree_t;
+#define _FILE_TREE_DEPTH 256
+static void _file_tree_count(int *n) { if (*n < 2147483647) (*n)++; }
+static void _file_tree_failed(_file_tree_t *t, int e) {
+  _file_tree_count(&t->kept);
+  if (t->first == 0) t->first = _file_error_code(e);
+}
+/* Removes what is inside the directory dfd names; takes dfd (closes it). */
+static void _file_tree_empty(_file_tree_t *t, int dfd, int depth) {
+  DIR *d = fdopendir(dfd);
+  int progress;
+  int kept0 = t->kept, mounts0 = t->mounts, first0 = t->first;
+  if (!d) { _file_tree_failed(t, errno); close(dfd); return; }
+  do {
+    struct dirent *e;
+    progress = 0;
+    /* a pass counts afresh: what failed or was a mount in the last pass is what is left */
+    t->kept = kept0; t->mounts = mounts0; t->first = first0;
+    rewinddir(d);
+    for (;;) {
+      struct stat st;
+      errno = 0;
+      e = readdir(d);
+      if (!e) {
+        if (errno != 0) _file_tree_failed(t, errno);
+        break;
+      }
+      if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+      if (fstatat(dirfd(d), e->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) {
+        if (errno != ENOENT) _file_tree_failed(t, errno);
+        continue;
+      }
+      if (S_ISDIR(st.st_mode)) {
+        int cfd;
+        struct stat cst;
+        int clean;
+        if (st.st_dev != t->dev) { _file_tree_count(&t->mounts); continue; }
+        if (depth >= _FILE_TREE_DEPTH) { _file_tree_failed(t, ENAMETOOLONG); continue; }
+        cfd = openat(dirfd(d), e->d_name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+        if (cfd < 0) { if (errno != ENOENT) _file_tree_failed(t, errno); continue; }
+        if (fstat(cfd, &cst) != 0) { _file_tree_failed(t, errno); close(cfd); continue; }
+        if (cst.st_dev != t->dev) { _file_tree_count(&t->mounts); close(cfd); continue; }
+        {
+          int kept_before = t->kept, mounts_before = t->mounts;
+          _file_tree_empty(t, cfd, depth + 1);
+          clean = (t->kept == kept_before && t->mounts == mounts_before);
+        }
+        if (clean) {
+          if (unlinkat(dirfd(d), e->d_name, AT_REMOVEDIR) == 0) { _file_tree_count(&t->removed); progress = 1; }
+          else if (errno != ENOENT) _file_tree_failed(t, errno);
+        }
+      } else {
+        if (unlinkat(dirfd(d), e->d_name, 0) == 0) { _file_tree_count(&t->removed); progress = 1; }
+        else if (errno != ENOENT) _file_tree_failed(t, errno);
+      }
+    }
+  } while (progress);
+  closedir(d);
+}
+/* 1 when path (trailing slashes ignored) names the root or nothing,
+   2 when its last name is . or .., else 0: remove_tree refuses these. */
+static int _file_tree_refused(const char *path) {
+  size_t len = strlen(path);
+  size_t start;
+  while (len > 0 && path[len - 1] == '/') len--;
+  if (len == 0) return 1;
+  start = len;
+  while (start > 0 && path[start - 1] != '/') start--;
+  if (len - start == 1 && path[start] == '.') return 2;
+  if (len - start == 2 && path[start] == '.' && path[start + 1] == '.') return 2;
+  return 0;
+}
+/* 0 with the counts (the top included) in the outputs, 1 nothing at
+   path, 2 or 3 refused (_file_tree_refused's 1 and 2), or the failure. */
+static int _file_remove_tree(const char *path, int *removed, int *kept, int *mounts, int *first) {
+  _file_tree_t t;
+  struct stat st, up;
+  int fd;
+  int refused = _file_tree_refused(path);
+  t.removed = 0; t.kept = 0; t.mounts = 0; t.first = 0;
+  *removed = 0; *kept = 0; *mounts = 0; *first = 0;
+  if (refused != 0) return refused + 1;
+  if (lstat(path, &st) != 0) return errno == ENOENT ? 1 : _file_failed(errno);
+  if (!S_ISDIR(st.st_mode)) {
+    if (unlink(path) == 0) t.removed = 1; else _file_tree_failed(&t, errno);
+  } else {
+    t.dev = st.st_dev;
+    fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+    if (fd < 0) _file_tree_failed(&t, errno);
+    else if (fstatat(fd, "..", &up, 0) == 0 && up.st_dev != st.st_dev) {
+      /* the top is itself a mount point: left alone */
+      _file_tree_count(&t.mounts);
+      close(fd);
+    } else {
+      _file_tree_empty(&t, fd, 0);
+      if (t.kept == 0 && t.mounts == 0) {
+        if (rmdir(path) == 0) _file_tree_count(&t.removed); else _file_tree_failed(&t, errno);
+      }
+    }
+  }
+  *removed = t.removed; *kept = t.kept; *mounts = t.mounts; *first = t.first;
+  return 0;
+}
 #endif
 %}
 end
@@ -500,6 +728,153 @@ end
 #pub fn file_chmod
   {lb:agz}{n:pos | n < 1048576}
   (path: !$A.borrow(byte, lb, n), path_len: int n, mode: int): $R.result(int, io_error)
+
+(* ============================================================
+   Renaming, removing, links and status (keyword: remove-rename)
+   ============================================================ *)
+
+(* None of these follows a symlink at the end of its path (a link is
+   itself renamed, removed or read), and each answers with a constructor
+   for every outcome; the reasons are io_error's, so Unrecognized is the
+   errno none of the others names. A path is n bytes, 1 or more (an empty
+   path is a type error), without a NUL. *)
+
+(* How a rename ended *)
+#pub datavtype rename_outcome =
+  | Renamed                           (* source is now at destination *)
+  | RenameFailed of (io_error)        (* nothing moved: CrossesDevices, DirectoryNotEmpty, ... *)
+
+(* rename(2): source becomes destination in one step, replacing a file
+   (or an empty directory) already there, so a reader sees one or the
+   other and never a half. Both paths must be on one file system, else
+   CrossesDevices. *)
+#pub fn file_rename
+  {ls,ld:agz}{ns,nd:pos | ns < 1048576; nd < 1048576}
+  (source: !$A.borrow(byte, ls, ns), source_len: int ns,
+   destination: !$A.borrow(byte, ld, nd), destination_len: int nd): rename_outcome
+
+(* What remove took away *)
+#pub datavtype remove_outcome =
+  | RemovedFile                       (* a file, or a symlink (not its target) *)
+  | RemovedEmptyDirectory
+  | RemoveFailed of (io_error)        (* DirectoryNotEmpty for a directory with entries *)
+
+(* Removes the file, the symlink or the empty directory at path
+   (unlink or rmdir), never a directory's contents. *)
+#pub fn file_remove
+  {lb:agz}{n:pos | n < 1048576}
+  (path: !$A.borrow(byte, lb, n), path_len: int n): remove_outcome
+
+(* Why remove_tree would not start: the path names the root of the file
+   system (or nothing: only slashes), or its last name is . or .. *)
+#pub datatype tree_refusal =
+  | RefusedRoot
+  | RefusedDotName
+
+(* How a recursive removal ended. The counts include the top. A
+   directory on another device than the top (a mount point) is neither
+   entered nor removed; a directory that still holds one is left. *)
+#pub datavtype remove_tree_outcome =
+  | TreeRemoved of (int)                           (* everything is gone: how many entries *)
+  | TreeAbsent                                     (* nothing was at path *)
+  | TreeRefused of (tree_refusal)                  (* nothing was touched *)
+  | TreeFailed of (io_error)                       (* path could not be examined *)
+  | TreeLeftMounts of (int, int)                   (* removed, mount points left (the rest is gone) *)
+  | TreeLeftSome of (int, int, int, io_error)      (* removed, entries that failed, mount points left, the first failure *)
+
+(* Removes the file, symlink or directory at path with everything under
+   it. It never follows a symlink (a link is unlinked, not entered), does
+   not cross onto another device, refuses the root and a path ending in .
+   or .., and does not stop at a failure: it removes what it can, counts
+   what it could not and says the first reason. A descent deeper than 256
+   directories is a failure (InvalidFilename) for the directory at that
+   depth. A directory that gains entries during the walk is passed again
+   until a pass removes nothing. *)
+#pub fn file_remove_tree
+  {lb:agz}{n:pos | n < 1048576}
+  (path: !$A.borrow(byte, lb, n), path_len: int n): remove_tree_outcome
+
+(* What mkdir -p did *)
+#pub datavtype make_directories_outcome =
+  | DirectoriesCreated of (int)                    (* how many were made, 1 or more *)
+  | DirectoryExisted                               (* every one was there already *)
+  | MakeDirectoriesFailed of (io_error)            (* AlreadyExists for a name that is not a directory; those made before stay *)
+
+(* Makes the directory at path and every missing one before it, as mkdir
+   -p: the last has the permission bits mode (less the umask), the ones
+   before it mode with the owner's write and search bits (0300) added. *)
+#pub fn file_make_directories
+  {lb:agz}{n:pos | n < 1048576}{m:nat | m <= 4095}
+  (path: !$A.borrow(byte, lb, n), path_len: int n, mode: int m): make_directories_outcome
+
+(* The temporary directory made, the length of its path being n + 6 *)
+#pub datavtype temp_directory_outcome(path_len: int) =
+  | TempDirectoryMade(path_len) of ()
+  | TempDirectoryFailed(path_len) of (io_error)
+
+(* mkdtemp(3): makes a new directory, mode 0700, named prefix and six
+   characters of its own choosing, and writes its path to out[0, n + 6)
+   (no NUL). Nothing is written when it fails. *)
+#pub fn file_make_temp_directory
+  {lb:agz}{n:pos | n < 1048576}{lo:agz}{m:int | m >= n + 6}
+  (name_prefix: !$A.borrow(byte, lb, n), name_prefix_len: int n,
+   out: !$A.arr(byte, lo, m), out_size: int m): temp_directory_outcome(n + 6)
+
+(* How a symlink was made *)
+#pub datavtype symlink_outcome =
+  | SymlinkMade
+  | SymlinkFailed of (io_error)       (* AlreadyExists when path is there *)
+
+(* symlink(2): makes a link at path holding target, which need not exist *)
+#pub fn file_symlink
+  {lt,lp:agz}{nt,np:pos | nt < 1048576; np < 1048576}
+  (target: !$A.borrow(byte, lt, nt), target_len: int nt,
+   path: !$A.borrow(byte, lp, np), path_len: int np): symlink_outcome
+
+(* What a symlink holds, for a buffer of m bytes *)
+#pub datavtype read_link_outcome(m: int) =
+  | {k:nat | k < m} LinkTarget(m) of (int k)       (* the target is out[0, k) *)
+  | LinkTargetTooLong(m) of ()                     (* it has m bytes or more; nothing is relied on in out *)
+  | NotASymlink(m) of ()
+  | ReadLinkFailed(m) of (io_error)
+
+(* readlink(2): the target of the symlink at path, in out[0, k) (no NUL) *)
+#pub fn file_read_link
+  {lb:agz}{n:pos | n < 1048576}{lo:agz}{m:pos}
+  (path: !$A.borrow(byte, lb, n), path_len: int n,
+   out: !$A.arr(byte, lo, m), out_size: int m): read_link_outcome(m)
+
+(* What a name is, as lstat(2) says (a symlink is a Symlink, not what it
+   points to) *)
+#pub datatype file_kind =
+  | RegularFile
+  | Directory
+  | Symlink
+  | OtherFile                         (* a device, a pipe, a socket *)
+
+(* A path's kind, size in bytes (of a symlink, its target's length),
+   permission bits (0 to 07777) and owner's user id *)
+#pub datavtype file_info_outcome =
+  | {s,m,o:nat | m <= 4095} FileInfo of (file_kind, int s, int m, int o)
+  | FileInfoFailed of (io_error)      (* FileTooLarge for a size or an owner past an int *)
+
+#pub fn file_info
+  {lb:agz}{n:pos | n < 1048576}
+  (path: !$A.borrow(byte, lb, n), path_len: int n): file_info_outcome
+
+(* Whether a mode has an execute bit (owner, group or others) *)
+#pub fn mode_is_executable {m:nat | m <= 4095} (mode: int m): bool
+
+(* Whether a directory has any entry but . and .. *)
+#pub datavtype emptiness_outcome =
+  | DirectoryIsEmpty
+  | DirectoryHasEntries
+  | PathIsNotADirectory               (* including a symlink to a directory *)
+  | EmptinessFailed of (io_error)
+
+#pub fn directory_emptiness
+  {lb:agz}{n:pos | n < 1048576}
+  (path: !$A.borrow(byte, lb, n), path_len: int n): emptiness_outcome
 
 (* ============================================================
    Buffered reader
@@ -1015,6 +1390,131 @@ implement file_mkdir {lb}{n} (path, path_len, mode) = let
 in
   if r >= 0 then $R.ok(0)
   else $R.err(_io_error(r))
+end
+
+(* ============================================================
+   Renaming, removing, links and status implementations
+   ============================================================ *)
+
+implement file_rename {ls,ld}{ns,nd} (source, source_len, destination, destination_len) = let
+  val csource = _with_cpath(source, source_len)
+  val cdestination = _with_cpath(destination, destination_len)
+  val r = $UNSAFE begin $extfcall(int, "_file_rename",
+    $UNSAFE.castvwtp1{ptr}(csource), $UNSAFE.castvwtp1{ptr}(cdestination)) end
+  val () = $A.free<byte>(csource)
+  val () = $A.free<byte>(cdestination)
+in
+  if r >= 0 then Renamed() else RenameFailed(_io_error(r))
+end
+
+implement file_remove {lb}{n} (path, path_len) = let
+  val cpath = _with_cpath(path, path_len)
+  val r = $UNSAFE begin $extfcall(int, "_file_remove",
+    $UNSAFE.castvwtp1{ptr}(cpath)) end
+  val () = $A.free<byte>(cpath)
+in
+  if r = 1 then RemovedFile()
+  else if r = 2 then RemovedEmptyDirectory()
+  else if r < 0 then RemoveFailed(_io_error(r))
+  else RemoveFailed(Unrecognized())
+end
+
+implement file_remove_tree {lb}{n} (path, path_len) = let
+  val cpath = _with_cpath(path, path_len)
+  var removed: [r:nat] int r = 0
+  var kept: [k:nat] int k = 0
+  var mounts: [m:nat] int m = 0
+  var first: int = 0
+  val r = $UNSAFE begin $extfcall(int, "_file_remove_tree",
+    $UNSAFE.castvwtp1{ptr}(cpath), addr@removed, addr@kept, addr@mounts, addr@first) end
+  val () = $A.free<byte>(cpath)
+in
+  if r = 0 then
+    (if kept > 0 then TreeLeftSome(removed, kept, mounts, _io_error(~first))
+     else if mounts > 0 then TreeLeftMounts(removed, mounts)
+     else TreeRemoved(removed))
+  else if r = 1 then TreeAbsent()
+  else if r = 2 then TreeRefused(RefusedRoot())
+  else if r = 3 then TreeRefused(RefusedDotName())
+  else if r < 0 then TreeFailed(_io_error(r))
+  else TreeFailed(Unrecognized())
+end
+
+implement file_make_directories {lb}{n}{m} (path, path_len, mode) = let
+  val cpath = _with_cpath(path, path_len)
+  var created: [c:nat] int c = 0
+  val r = $UNSAFE begin $extfcall(int, "_file_mkdirs",
+    $UNSAFE.castvwtp1{ptr}(cpath), mode, addr@created) end
+  val () = $A.free<byte>(cpath)
+in
+  if r < 0 then MakeDirectoriesFailed(_io_error(r))
+  else if created > 0 then DirectoriesCreated(created)
+  else DirectoryExisted()
+end
+
+implement file_make_temp_directory {lb}{n}{lo}{m} (name_prefix, name_prefix_len, out, out_size) = let
+  val cprefix = _with_cpath(name_prefix, name_prefix_len)
+  val r = $UNSAFE begin $extfcall(int, "_file_mkdtemp",
+    $UNSAFE.castvwtp1{ptr}(cprefix), name_prefix_len, $UNSAFE.castvwtp1{ptr}(out)) end
+  val () = $A.free<byte>(cprefix)
+in
+  if r >= 0 then TempDirectoryMade()
+  else TempDirectoryFailed(_io_error(r))
+end
+
+implement file_symlink {lt,lp}{nt,np} (target, target_len, path, path_len) = let
+  val ctarget = _with_cpath(target, target_len)
+  val cpath = _with_cpath(path, path_len)
+  val r = $UNSAFE begin $extfcall(int, "_file_symlink",
+    $UNSAFE.castvwtp1{ptr}(ctarget), $UNSAFE.castvwtp1{ptr}(cpath)) end
+  val () = $A.free<byte>(ctarget)
+  val () = $A.free<byte>(cpath)
+in
+  if r >= 0 then SymlinkMade() else SymlinkFailed(_io_error(r))
+end
+
+implement file_read_link {lb}{n}{lo}{m} (path, path_len, out, out_size) = let
+  val cpath = _with_cpath(path, path_len)
+  val r = $UNSAFE begin $extfcall([k:int] int k, "_file_readlink",
+    $UNSAFE.castvwtp1{ptr}(cpath), $UNSAFE.castvwtp1{ptr}(out), out_size) end
+  val () = $A.free<byte>(cpath)
+in
+  if r = ~100 then NotASymlink()
+  else if r < 0 then ReadLinkFailed(_io_error(r))
+  else if r >= out_size then LinkTargetTooLong()
+  else LinkTarget(r)
+end
+
+implement file_info {lb}{n} (path, path_len) = let
+  val cpath = _with_cpath(path, path_len)
+  var kind: int = 0
+  var size: [s:nat] int s = 0
+  var mode: [m:nat | m <= 4095] int m = 0
+  var owner: [o:nat] int o = 0
+  val r = $UNSAFE begin $extfcall(int, "_file_lstat",
+    $UNSAFE.castvwtp1{ptr}(cpath), addr@kind, addr@size, addr@mode, addr@owner) end
+  val () = $A.free<byte>(cpath)
+in
+  if r < 0 then FileInfoFailed(_io_error(r))
+  else FileInfo(
+    (if kind = 0 then RegularFile() else if kind = 1 then Directory()
+     else if kind = 2 then Symlink() else OtherFile()), size, mode, owner)
+end
+
+implement mode_is_executable {m} (mode) =
+  (mode / 64) % 2 = 1 || (mode / 8) % 2 = 1 || mode % 2 = 1
+
+implement directory_emptiness {lb}{n} (path, path_len) = let
+  val cpath = _with_cpath(path, path_len)
+  val r = $UNSAFE begin $extfcall(int, "_file_dir_empty",
+    $UNSAFE.castvwtp1{ptr}(cpath)) end
+  val () = $A.free<byte>(cpath)
+in
+  if r = 1 then DirectoryIsEmpty()
+  else if r = 0 then DirectoryHasEntries()
+  else if r = 2 then PathIsNotADirectory()
+  else if r < 0 then EmptinessFailed(_io_error(r))
+  else EmptinessFailed(Unrecognized())
 end
 
 (* ============================================================

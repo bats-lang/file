@@ -1,0 +1,8 @@
+[package]
+name = "read-link-index-past-buffer"
+kind = "lib"
+
+[dependencies]
+"array" = ""
+"file" = ""
+"result" = ""

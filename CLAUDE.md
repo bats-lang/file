@@ -92,3 +92,59 @@ the pull request.
 **Old forms.** `buf_writer` and its functions (removal: #80) and `buf_reader` and its
 functions (removal: #81) are kept with their types, marked deprecated by a one-line
 comment, and called by `tests/dynamic/buffered` and `tests/dynamic/closeflush`.
+
+## Rename, remove, links and status (keyword: remove-rename, bats-lang/file#53)
+
+So that tools need no `sh -c` (`mv`, `rm -rf`, `mkdir -p`, `ln -s`, `readlink`, `test -d`):
+`file_rename`, `file_remove`, `file_remove_tree`, `file_make_directories`,
+`file_make_temp_directory`, `file_symlink`, `file_read_link`, `file_info`,
+`directory_emptiness` and `mode_is_executable`. All are new names beside the old; no
+existing signature changed and nothing is deprecated (`file_mkdir` stays, one level, and
+`tests/dynamic/dirs` calls it). Each answers with a linear datatype of its own, a
+constructor for each outcome, matched with `case+`; the reason of a failure is `io_error`,
+decoded once by `_io_error`, so `Unrecognized` is the errno nothing else names. A path is
+`n:pos` bytes, so an empty path is a type error.
+
+What is added to the unsafe C block (the same block and the same trust as the other
+primitives: each function calls the POSIX call and reports its answer, and the type of its
+result is what the C returns): `_file_rename` (rename(2)), `_file_remove` (lstat, then rmdir
+or unlink), `_file_symlink`, `_file_readlink` (-100 for EINVAL, "not a symlink"), `_file_lstat`
+(kind, size, permission bits, owner, with EFBIG/EOVERFLOW when a size or an owner does not fit
+an int), `_file_dir_empty`, `_file_mkdirs` (every missing directory, the ones before the last
+with `mode | 0300` as mkdir -p does; the ones made before a failure stay), `_file_mkdtemp`
+(mode 0700, the path n + 6 bytes copied out, which the type of `out` makes room for) and the
+walk of `_file_remove_tree`.
+
+`file_remove_tree` is the dangerous one, so: it refuses the root (a path of only slashes) and
+a path whose last name is `.` or `..` (outcome `TreeRefused`); a symlink is unlinked and never
+entered (the walk is `openat`/`fstatat`/`unlinkat` with `O_NOFOLLOW` and
+`AT_SYMLINK_NOFOLLOW`, so a directory swapped for a link during the walk is not followed
+either); a directory on another device than the top (a mount point), or a top that is itself
+one, is neither entered nor removed (`TreeLeftMounts`; a bind mount on the same device is not
+detected); a failure does not stop the walk, it is counted and the first reason is kept
+(`TreeLeftSome`), and the directories above an entry that stays stay too; a descent past 256
+directories is a failure (`InvalidFilename`); a directory that gains entries during the walk
+is passed again until a pass removes nothing, and only the last pass counts mounts and failures. Research behind it: GNU `rm` (`--preserve-root`
+by default, refuses `.` and `..`, `--one-file-system`), Rust's `std::fs::remove_dir_all`
+(descriptor-relative `unlinkat`, never follows a link, CVE-2022-21658) and Go's
+`os.RemoveAll` (refuses a path ending in `.` or `..`, and walks with `unlinkat`).
+
+Tested here: `tests/dynamic/removal` (valgrind, `no-leaks`) runs every operation on real files
+in a `mkdtemp` directory and removes that with `file_remove_tree`; a failure class has a check
+that fails when the class occurs (shown by injection in the pull request): a link followed
+or removed through, a missing `|0300`, a name that is not a directory accepted, `.` and `..`
+counted as entries, the depth limit, a top taken for a mount point, a rename that copies, and
+swapped symlink arguments. The mount check of `/proc` runs where `/proc/self` exists.
+Keyword remove-tree-mounts: a mount point below the top, and a failure by permission, are
+tested with a tmpfs the test mounts inside its own directory with mount(8) (directly, else
+`sudo -n`): one at `mt/sub` for `TreeLeftMounts`, one at `ro` remounted read-only for
+`TreeLeftSome` with EROFS (an unlink the kernel refuses even to root). Where neither mount
+works the test prints `SKIP mounts` with how each mount ended (a constructor name) and
+passes; that is not a run of the class. A rename of `mt/f` into the mount is also checked to
+answer `CrossesDevices`. The test compares outcomes by datatypes with named constructors
+(`shape`, `failure`), never by numbers. The refusal of the root, the empty path and the dot names was shown by injection
+with every deleting call of the walk replaced by a stand-in that deletes nothing, so a
+build without the refusal cannot delete a real file (the pull request says how). Not
+tested: a bind mount on the same device (not detected, as above). Rejected in `tests/static/reject` (`remove-empty-path`, `temp-directory-small-buffer`,
+`read-link-index-past-buffer`, `make-directories-mode-past-bits`, `remove-tree-left-some-left-out`,
+`rename-outcome-dropped`), with `accept/remove-rename-use` as the control.
